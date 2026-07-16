@@ -10,6 +10,8 @@ export enum VehicleStatus {
   AVAILABLE = 'Available',
   BOOKED = 'Booked',
   MAINTENANCE = 'Maintenance',
+  // Admin-hidden: kept in the fleet but not shown on the public site.
+  UNLISTED = 'Unlisted',
 }
 
 @Entity('vehicles')

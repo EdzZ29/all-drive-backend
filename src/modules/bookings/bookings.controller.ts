@@ -2,6 +2,10 @@ import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
 
 import { BookingsService } from './bookings.service';
 import { CreateBookingDto } from './dto/create-booking.dto';
+import {
+  UpdateBookingDto,
+  UpdateBookingStatusDto,
+} from './dto/update-booking.dto';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { UserRole } from '../users/entities/user.entity';
@@ -37,5 +41,19 @@ export class BookingsController {
   @Get()
   findAll() {
     return this.bookingsService.findAll();
+  }
+
+  // Admin: approve / decline / mark returned / complete a booking.
+  @Roles(UserRole.ADMIN)
+  @Patch(':id/status')
+  updateStatus(@Param('id') id: number, @Body() dto: UpdateBookingStatusDto) {
+    return this.bookingsService.updateStatus(+id, dto);
+  }
+
+  // Admin: adjust the booking's dates, handover time/place/method, or notes.
+  @Roles(UserRole.ADMIN)
+  @Patch(':id')
+  update(@Param('id') id: number, @Body() dto: UpdateBookingDto) {
+    return this.bookingsService.update(+id, dto);
   }
 }

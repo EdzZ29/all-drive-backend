@@ -14,6 +14,17 @@ import { UserRole } from '../users/entities/user.entity';
 
 const UPLOAD_DIR = './uploads';
 const ALLOWED = /\.(jpg|jpeg|png|webp|gif)$/i;
+// Booking documents (IDs, licenses, payment receipts) may also be PDFs.
+const ALLOWED_DOCS = /\.(jpg|jpeg|png|webp|gif|pdf)$/i;
+
+const diskStore = diskStorage({
+  destination: UPLOAD_DIR,
+  filename: (_req, file, cb) => {
+    // Unique, collision-safe name; keep the original extension.
+    const unique = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
+    cb(null, `${unique}${extname(file.originalname)}`);
+  },
+});
 
 @Controller('uploads')
 export class UploadsController {
@@ -22,14 +33,7 @@ export class UploadsController {
   @Post('image')
   @UseInterceptors(
     FileInterceptor('file', {
-      storage: diskStorage({
-        destination: UPLOAD_DIR,
-        filename: (_req, file, cb) => {
-          // Unique, collision-safe name; keep the original extension.
-          const unique = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
-          cb(null, `${unique}${extname(file.originalname)}`);
-        },
-      }),
+      storage: diskStore,
       limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB
       fileFilter: (_req, file, cb) => {
         if (!ALLOWED.test(file.originalname)) {
@@ -45,6 +49,29 @@ export class UploadsController {
   uploadImage(@UploadedFile() file: Express.Multer.File) {
     if (!file) throw new BadRequestException('No file uploaded');
     // Served statically under /uploads (see main.ts).
+    return { url: `/uploads/${file.filename}`, filename: file.filename };
+  }
+
+  // Booking documents — any authenticated user (clients upload their ID,
+  // driver's license and payment receipt during booking). Images or PDF.
+  @Post('document')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: diskStore,
+      limits: { fileSize: 8 * 1024 * 1024 }, // 8 MB
+      fileFilter: (_req, file, cb) => {
+        if (!ALLOWED_DOCS.test(file.originalname)) {
+          return cb(
+            new BadRequestException('Only image or PDF files are allowed'),
+            false,
+          );
+        }
+        cb(null, true);
+      },
+    }),
+  )
+  uploadDocument(@UploadedFile() file: Express.Multer.File) {
+    if (!file) throw new BadRequestException('No file uploaded');
     return { url: `/uploads/${file.filename}`, filename: file.filename };
   }
 }
