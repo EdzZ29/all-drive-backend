@@ -13,7 +13,6 @@ import { DashboardService } from './modules/dashboard/dashboard.service';
 import { ReportsModule } from './modules/reports/reports.module';
 import { ReportsController } from './modules/reports/reports.controller';
 import { NotificationsModule } from './modules/notifications/notifications.module';
-import { NotificationsService } from './modules/notifications/notifications.service';
 import { MaintenanceModule } from './modules/maintenance/maintenance.module';
 import { MaintenanceController } from './modules/maintenance/maintenance.controller';
 import { PromosModule } from './modules/promos/promos.module';
@@ -80,7 +79,6 @@ import { AuthModule } from './modules/auth/auth.module';
     ClientsService,
     DriversService,
     PromosService,
-    NotificationsService,
     DashboardService,
     SettingsService,
   ],

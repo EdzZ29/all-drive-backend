@@ -1,4 +1,14 @@
-import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  MessageEvent,
+  Param,
+  Patch,
+  Post,
+  Sse,
+} from '@nestjs/common';
+import { Observable } from 'rxjs';
 
 import { BookingsService } from './bookings.service';
 import { CreateBookingDto } from './dto/create-booking.dto';
@@ -28,6 +38,14 @@ export class BookingsController {
   @Get('me')
   findMine(@CurrentUser('id') clientId: number) {
     return this.bookingsService.findMine(clientId);
+  }
+
+  // Live stream of the client's own booking changes (SSE). Lets the client's
+  // dashboard reflect admin approvals/completions without a refresh.
+  @Roles(UserRole.CLIENT)
+  @Sse('stream')
+  stream(@CurrentUser('id') clientId: number): Observable<MessageEvent> {
+    return this.bookingsService.streamForClient(clientId);
   }
 
   @Roles(UserRole.CLIENT)

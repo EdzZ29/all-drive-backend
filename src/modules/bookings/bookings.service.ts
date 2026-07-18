@@ -2,10 +2,13 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  MessageEvent,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Between, Not, Repository } from 'typeorm';
+import { Subject, merge, interval, Observable } from 'rxjs';
+import { filter, map } from 'rxjs/operators';
 
 import { Booking, BookingStatus } from './entities/booking.entity';
 import { CreateBookingDto } from './dto/create-booking.dto';
@@ -15,6 +18,7 @@ import {
 } from './dto/update-booking.dto';
 import { VehiclesService } from '../vehicles/vehicles.service';
 import { VehicleStatus } from '../vehicles/entities/vehicles.entity';
+import { NotificationsService } from '../notifications/notifications.service';
 
 // When a booking becomes Approved the vehicle is in use, so it's hidden from
 // the public fleet. Returning/completing/declining/cancelling frees it again.
@@ -36,11 +40,30 @@ const ACTIVE_STATUSES = [
 
 @Injectable()
 export class BookingsService {
+  // Broadcasts booking changes to connected clients. Each client's SSE stream
+  // filters this to only their own bookings, so an admin approving/completing a
+  // booking updates that client's screen in real time — no refresh needed.
+  private readonly bookingEvents$ = new Subject<Booking>();
+
   constructor(
     @InjectRepository(Booking)
     private readonly bookingRepository: Repository<Booking>,
     private readonly vehiclesService: VehiclesService,
+    private readonly notifications: NotificationsService,
   ) {}
+
+  // Live stream of the given client's booking changes (Server-Sent Events),
+  // plus a heartbeat so proxies keep the connection open.
+  streamForClient(clientId: number): Observable<MessageEvent> {
+    const updates$ = this.bookingEvents$.pipe(
+      filter((b) => b.clientId === clientId),
+      map((b): MessageEvent => ({ type: 'booking', data: b })),
+    );
+    const heartbeat$ = interval(25_000).pipe(
+      map((): MessageEvent => ({ type: 'ping', data: 'keepalive' })),
+    );
+    return merge(updates$, heartbeat$);
+  }
 
   async create(clientId: number, dto: CreateBookingDto) {
     const start = new Date(dto.startDate);
@@ -111,7 +134,19 @@ export class BookingsService {
       status: VehicleStatus.BOOKED,
     });
 
-    return saved;
+    // Reload with the eager client/vehicle relations so the admin notification
+    // (and the live list update) has the names and images it needs.
+    const full = await this.bookingRepository.findOne({
+      where: { id: saved.id },
+    });
+
+    // Notify admins in real time. Fire-and-forget: a notification failure must
+    // never fail the client's booking.
+    if (full) {
+      this.notifications.notifyNewBooking(full).catch(() => undefined);
+    }
+
+    return full ?? saved;
   }
 
   findAll() {
@@ -158,6 +193,9 @@ export class BookingsService {
     await this.vehiclesService.update(booking.vehicleId, {
       status: VehicleStatus.AVAILABLE,
     });
+
+    // Let admins know in real time (booking still carries its eager relations).
+    this.notifications.notifyBookingCancelled(saved).catch(() => undefined);
 
     return saved;
   }
@@ -220,6 +258,10 @@ export class BookingsService {
       });
     }
 
+    // Push the change to the owning client's live stream (approve, complete,
+    // decline, return, cancel) so their screen updates without a refresh.
+    this.bookingEvents$.next(saved);
+
     return saved;
   }
 
@@ -254,6 +296,12 @@ export class BookingsService {
         Math.round((booking.totalPrice / 2) * 100) / 100;
     }
 
-    return this.bookingRepository.save(booking);
+    const saved = await this.bookingRepository.save(booking);
+
+    // Reflect admin edits (dates, payment validation, etc.) on the client's
+    // live stream too.
+    this.bookingEvents$.next(saved);
+
+    return saved;
   }
 }
