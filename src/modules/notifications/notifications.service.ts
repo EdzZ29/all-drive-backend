@@ -26,6 +26,11 @@ interface InquiryLike {
   message: string;
 }
 
+interface ChatLike {
+  id: number;
+  name: string;
+}
+
 // A live notification carries the persisted row plus the full booking or
 // inquiry, so the admin UI can update its lists without re-fetching.
 type LiveNotification = Notification & {
@@ -33,12 +38,21 @@ type LiveNotification = Notification & {
   inquiry?: InquiryLike;
 };
 
+// New chat messages (from a visitor, an automatic reply or another admin),
+// streamed live so open inboxes and threads update without reloading. Not
+// stored as notifications: the conversation itself keeps the unread count.
+export interface ChatEvent {
+  conversation: object & { id: number };
+  messages: (object & { sender: string })[];
+}
+
 @Injectable()
 export class NotificationsService {
   // Broadcasts to every open admin SSE connection. In-memory: a fresh process
   // starts with no subscribers, and past notifications are replayed from the DB
   // when the bell first loads.
   private readonly events$ = new Subject<LiveNotification>();
+  private readonly chat$ = new Subject<ChatEvent>();
 
   constructor(
     @InjectRepository(Notification)
@@ -94,16 +108,37 @@ export class NotificationsService {
     );
   }
 
-  // SSE stream: live notifications plus a periodic heartbeat so proxies and
-  // load balancers keep the connection open.
+  // A visitor started a live chat (later messages only go out as chat events).
+  notifyNewChat(chat: ChatLike, firstMessage: string) {
+    return this.emit(
+      {
+        type: NotificationType.CHAT,
+        title: `New chat: ${chat.name}`.slice(0, 160),
+        message: truncate(firstMessage),
+        chatId: chat.id,
+      },
+      {},
+    );
+  }
+
+  // New messages in a chat, to every open dashboard.
+  emitChat(event: ChatEvent) {
+    this.chat$.next(event);
+  }
+
+  // SSE stream: live notifications and chat messages, plus a periodic
+  // heartbeat so proxies and load balancers keep the connection open.
   stream(): Observable<MessageEvent> {
     const notifications$ = this.events$.pipe(
       map((n): MessageEvent => ({ type: 'notification', data: n })),
     );
+    const chat$ = this.chat$.pipe(
+      map((e): MessageEvent => ({ type: 'chat', data: e })),
+    );
     const heartbeat$ = interval(25_000).pipe(
       map((): MessageEvent => ({ type: 'ping', data: 'keepalive' })),
     );
-    return merge(notifications$, heartbeat$);
+    return merge(notifications$, chat$, heartbeat$);
   }
 
   // Persist a notification and push it to connected admins. The persisted row
@@ -112,6 +147,7 @@ export class NotificationsService {
     partial: Pick<Notification, 'type' | 'title' | 'message'> & {
       bookingId?: number;
       inquiryId?: number;
+      chatId?: number;
     },
     live: Pick<LiveNotification, 'booking' | 'inquiry'>,
   ) {
@@ -121,6 +157,7 @@ export class NotificationsService {
       message: partial.message,
       bookingId: partial.bookingId ?? null,
       inquiryId: partial.inquiryId ?? null,
+      chatId: partial.chatId ?? null,
     });
     const saved = await this.repo.save(notification);
     this.events$.next({ ...saved, ...live });

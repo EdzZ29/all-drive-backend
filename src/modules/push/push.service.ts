@@ -135,6 +135,17 @@ export class PushService implements OnModuleInit {
     });
   }
 
+  // A visitor wrote in a live chat. One notification per chat: later messages
+  // replace it (same tag) instead of stacking up.
+  notifyAdminsOfChat(chat: { id: number; name: string }, message: string) {
+    return this.sendToAdmins({
+      title: `Chat: ${chat.name}`,
+      body: message.length > 140 ? `${message.slice(0, 139)}…` : message,
+      url: `/admin/messages?id=${chat.id}`,
+      tag: `chat-${chat.id}`,
+    });
+  }
+
   // Sends to every subscribed browser of every active admin. Never throws:
   // callers fire it without awaiting, and a failed push must not affect them.
   private async sendToAdmins(payload: PushPayload) {

@@ -6,6 +6,7 @@ import { Booking, BookingStatus } from '../bookings/entities/booking.entity';
 import { Inquiry, InquiryStatus } from '../inquiries/entities/inquiry.entity';
 import { Notification } from '../notifications/entities/notification.entity';
 import { Vehicle, VehicleStatus } from '../vehicles/entities/vehicles.entity';
+import { ChatConversation } from '../chat/entities/chat-conversation.entity';
 
 @Injectable()
 export class DashboardService {
@@ -15,6 +16,8 @@ export class DashboardService {
     @InjectRepository(Notification)
     private readonly notifications: Repository<Notification>,
     @InjectRepository(Vehicle) private readonly vehicles: Repository<Vehicle>,
+    @InjectRepository(ChatConversation)
+    private readonly chats: Repository<ChatConversation>,
   ) {}
 
   // Counts for the admin sidebar badges and the overview page.
@@ -26,6 +29,7 @@ export class DashboardService {
       unreadNotifications,
       vehicleRows,
       revenue,
+      unreadChats,
     ] = await Promise.all([
       this.bookings.count({ where: { status: BookingStatus.PENDING } }),
       this.bookings.count({
@@ -46,6 +50,8 @@ export class DashboardService {
         .select('COALESCE(SUM(b.totalPrice), 0)', 'total')
         .where('b.status = :status', { status: BookingStatus.COMPLETED })
         .getRawOne<{ total: string }>(),
+      // Chats with visitor messages no admin has opened yet.
+      this.chats.createQueryBuilder('c').where('c.adminUnread > 0').getCount(),
     ]);
 
     const units = Object.fromEntries(
@@ -58,6 +64,7 @@ export class DashboardService {
       activeBookings,
       newInquiries,
       unreadNotifications,
+      unreadChats,
       units,
       completedRevenue: Number(revenue?.total ?? 0),
     };

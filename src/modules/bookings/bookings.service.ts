@@ -43,6 +43,24 @@ function addDays(date: string, days: number) {
   return d.toISOString().slice(0, 10);
 }
 
+// The customer's email (any case) or phone number (any format: "0917 123 4567",
+// "+63 917...", compared on the last 10 digits).
+function matchesContact(
+  booking: Pick<Booking, 'customerEmail' | 'customerPhone'>,
+  contact: string,
+) {
+  const value = contact.trim();
+  if (value.includes('@')) {
+    return (
+      !!booking.customerEmail &&
+      booking.customerEmail.trim().toLowerCase() === value.toLowerCase()
+    );
+  }
+  const digits = (s: string) => s.replace(/\D/g, '').slice(-10);
+  const given = digits(value);
+  return given.length >= 7 && given === digits(booking.customerPhone);
+}
+
 // Short, easy-to-read reference, e.g. "AD-1013-7K2Q" (no 0/O or 1/I mix-ups).
 // Same format the website uses, for bookings it didn't number itself.
 function bookingReference() {
@@ -124,6 +142,45 @@ export class BookingsService {
 
   findAll() {
     return this.bookingRepository.find({ order: { createdAt: 'DESC' } });
+  }
+
+  // "Track my booking" on the website. The code alone isn't enough: the email
+  // or mobile number must match too. Any mismatch gets the same answer, so it
+  // can't be used to find out which codes exist.
+  async track(reference: string, contact: string) {
+    const code = reference.trim().toUpperCase().replace(/\s+/g, '');
+    const booking = await this.bookingRepository.findOne({
+      where: { reference: code },
+    });
+    if (!booking || !matchesContact(booking, contact)) {
+      throw new NotFoundException(
+        "We couldn't find a booking with those details",
+      );
+    }
+    const car = booking.vehicle
+      ? `${booking.vehicle.brand} ${booking.vehicle.model}`
+      : null;
+    // Only what the customer needs to see (no internal notes or ids).
+    return {
+      reference: booking.reference,
+      customerName: booking.customerName,
+      status: booking.status,
+      carLabel: booking.carLabel,
+      assignedCar: car,
+      startDate: booking.startDate,
+      endDate: booking.endDate,
+      pickupTime: booking.pickupTime,
+      days: booking.days,
+      driveType: booking.driveType,
+      destination: booking.destination,
+      specificPlace: booking.specificPlace,
+      handover: booking.handover,
+      location: booking.location,
+      totalPrice: booking.totalPrice,
+      estimateText: booking.estimateText,
+      paymentStatus: booking.paymentStatus,
+      createdAt: booking.createdAt,
+    };
   }
 
   async findOne(id: number) {

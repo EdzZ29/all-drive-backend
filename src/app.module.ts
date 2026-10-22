@@ -38,6 +38,7 @@ import { InquiriesModule } from './modules/inquiries/inquiries.module';
 import { WebsiteModule } from './modules/website/website.module';
 import { PushModule } from './modules/push/push.module';
 import { CatalogModule } from './modules/catalog/catalog.module';
+import { ChatModule } from './modules/chat/chat.module';
 
 @Module({
   imports: [
@@ -66,6 +67,7 @@ import { CatalogModule } from './modules/catalog/catalog.module';
     WebsiteModule,
     PushModule,
     CatalogModule,
+    ChatModule,
     PaymentsModule,
     DriversModule,
     ReviewsModule,

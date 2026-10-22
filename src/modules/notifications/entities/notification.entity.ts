@@ -12,6 +12,8 @@ export enum NotificationType {
   BOOKING = 'booking',
   // A message arrived from the website's contact form.
   INQUIRY = 'inquiry',
+  // A visitor started a live chat on the website.
+  CHAT = 'chat',
 }
 
 @Entity('notifications')
@@ -40,6 +42,10 @@ export class Notification {
   // Likewise for an inquiry notification.
   @Column({ type: 'int', nullable: true })
   inquiryId!: number | null;
+
+  // Likewise for a live chat.
+  @Column({ type: 'int', nullable: true })
+  chatId!: number | null;
 
   // Whether an admin has seen/dismissed this notification.
   @Column({ type: 'boolean', default: false })
