@@ -1,14 +1,12 @@
 import {
   BadRequestException,
-  ForbiddenException,
+  ConflictException,
   Injectable,
-  MessageEvent,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Between, Not, Repository } from 'typeorm';
-import { Subject, merge, interval, Observable } from 'rxjs';
-import { filter, map } from 'rxjs/operators';
+import { In, Not, Repository } from 'typeorm';
+import { randomInt } from 'crypto';
 
 import { Booking, BookingStatus } from './entities/booking.entity';
 import { CreateBookingDto } from './dto/create-booking.dto';
@@ -17,217 +15,144 @@ import {
   UpdateBookingStatusDto,
 } from './dto/update-booking.dto';
 import { VehiclesService } from '../vehicles/vehicles.service';
-import { VehicleStatus } from '../vehicles/entities/vehicles.entity';
+import { Vehicle, VehicleStatus } from '../vehicles/entities/vehicles.entity';
 import { NotificationsService } from '../notifications/notifications.service';
+import { PushService } from '../push/push.service';
+import { MailService } from '../mail/mail.service';
+import { SmsService } from '../sms/sms.service';
 
-// When a booking becomes Approved the vehicle is in use, so it's hidden from
-// the public fleet. Returning/completing/declining/cancelling frees it again.
-const VEHICLE_STATUS_FOR_BOOKING: Partial<Record<BookingStatus, VehicleStatus>> =
-  {
-    [BookingStatus.APPROVED]: VehicleStatus.BOOKED,
-    [BookingStatus.RETURNED]: VehicleStatus.AVAILABLE,
-    [BookingStatus.COMPLETED]: VehicleStatus.AVAILABLE,
-    [BookingStatus.DECLINED]: VehicleStatus.AVAILABLE,
-    [BookingStatus.CANCELLED]: VehicleStatus.AVAILABLE,
-  };
+// When a booking becomes Approved its assigned vehicle is in use, so it's
+// marked Booked. Returning/completing/declining/cancelling frees it again.
+const VEHICLE_STATUS_FOR_BOOKING: Partial<
+  Record<BookingStatus, VehicleStatus>
+> = {
+  [BookingStatus.APPROVED]: VehicleStatus.BOOKED,
+  [BookingStatus.RETURNED]: VehicleStatus.AVAILABLE,
+  [BookingStatus.COMPLETED]: VehicleStatus.AVAILABLE,
+  [BookingStatus.DECLINED]: VehicleStatus.AVAILABLE,
+  [BookingStatus.CANCELLED]: VehicleStatus.AVAILABLE,
+};
 
-// Statuses that still hold the vehicle (used for clash detection).
-const ACTIVE_STATUSES = [
-  BookingStatus.PENDING,
-  BookingStatus.APPROVED,
-  BookingStatus.RETURNED,
-];
+// Statuses that still hold the assigned vehicle (used for clash detection).
+const ACTIVE_STATUSES = [BookingStatus.PENDING, BookingStatus.APPROVED];
+
+// "2026-10-21" + 3 days -> "2026-10-24", on plain calendar dates.
+function addDays(date: string, days: number) {
+  const d = new Date(`${date}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+// Short, easy-to-read reference, e.g. "AD-1013-7K2Q" (no 0/O or 1/I mix-ups).
+// Same format the website uses, for bookings it didn't number itself.
+function bookingReference() {
+  const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+  const random = Array.from(
+    { length: 4 },
+    () => chars[randomInt(chars.length)],
+  ).join('');
+  const date = new Date()
+    .toLocaleDateString('en-US', {
+      month: '2-digit',
+      day: '2-digit',
+      timeZone: 'Asia/Manila',
+    })
+    .replace('/', '');
+  return `AD-${date}-${random}`;
+}
 
 @Injectable()
 export class BookingsService {
-  // Broadcasts booking changes to connected clients. Each client's SSE stream
-  // filters this to only their own bookings, so an admin approving/completing a
-  // booking updates that client's screen in real time — no refresh needed.
-  private readonly bookingEvents$ = new Subject<Booking>();
-
   constructor(
     @InjectRepository(Booking)
     private readonly bookingRepository: Repository<Booking>,
     private readonly vehiclesService: VehiclesService,
     private readonly notifications: NotificationsService,
+    private readonly push: PushService,
+    private readonly mail: MailService,
+    private readonly sms: SmsService,
   ) {}
 
-  // Live stream of the given client's booking changes (Server-Sent Events),
-  // plus a heartbeat so proxies keep the connection open.
-  streamForClient(clientId: number): Observable<MessageEvent> {
-    const updates$ = this.bookingEvents$.pipe(
-      filter((b) => b.clientId === clientId),
-      map((b): MessageEvent => ({ type: 'booking', data: b })),
-    );
-    const heartbeat$ = interval(25_000).pipe(
-      map((): MessageEvent => ({ type: 'ping', data: 'keepalive' })),
-    );
-    return merge(updates$, heartbeat$);
-  }
-
-  async create(clientId: number, dto: CreateBookingDto) {
-    const start = new Date(dto.startDate);
-    const end = new Date(dto.endDate);
-
-    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
-      throw new BadRequestException('Invalid booking dates');
-    }
-    if (end <= start) {
-      throw new BadRequestException('End date must be after start date');
+  // A booking request from the public website's booking form.
+  async createFromWebsite(dto: CreateBookingDto) {
+    const [startDate, pickupTime] = dto.pickup.split('T');
+    if (Number.isNaN(new Date(`${startDate}T00:00:00Z`).getTime())) {
+      throw new BadRequestException('Invalid pickup date');
     }
 
-    const vehicle = await this.vehiclesService.findOne(dto.vehicleId);
-    if (vehicle.status === VehicleStatus.MAINTENANCE) {
-      throw new BadRequestException('Vehicle is not available for booking');
+    const reference = dto.reference ?? bookingReference();
+    if (await this.bookingRepository.existsBy({ reference })) {
+      // The website retried a booking that already arrived: don't duplicate.
+      throw new ConflictException(`Booking ${reference} already exists`);
     }
-
-    // Reject overlapping active reservations for the same vehicle.
-    const clash = await this.bookingRepository.findOne({
-      where: {
-        vehicleId: dto.vehicleId,
-        status: Not(
-          // Only cancelled/declined/completed bookings free up the vehicle.
-          BookingStatus.CANCELLED,
-        ),
-        startDate: Between(dto.startDate, dto.endDate),
-      },
-    });
-    if (clash && ACTIVE_STATUSES.includes(clash.status)) {
-      throw new BadRequestException(
-        'Vehicle is already booked for the selected dates',
-      );
-    }
-
-    const days = Math.ceil(
-      (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24),
-    );
-    const totalPrice = days * Number(vehicle.dailyRate);
 
     const booking = this.bookingRepository.create({
-      clientId,
-      vehicleId: dto.vehicleId,
-      startDate: dto.startDate,
-      endDate: dto.endDate,
-      totalPrice,
+      reference,
+      customerName: dto.name,
+      customerPhone: dto.contact,
+      customerEmail: dto.email || null,
+      customerAddress: dto.address,
+      customerWork: dto.work,
+      carCategory: dto.carCategory,
+      carModel: dto.carModel || null,
+      carLabel: dto.carLabel,
+      destination: dto.destination,
+      rateZone: dto.zone,
+      specificPlace: dto.specificPlace || null,
+      startDate,
+      endDate: addDays(startDate, dto.days),
+      pickupTime,
+      days: dto.days,
       driveType: dto.driveType,
-      handover: dto.handover,
-      location: dto.location ?? null,
-      pickupTime: dto.pickupTime ?? null,
-      contactPhone: dto.contactPhone ?? null,
-      idType: dto.idType ?? null,
-      idImage: dto.idImage ?? null,
-      licenseNumber: dto.licenseNumber ?? null,
-      licenseImage: dto.licenseImage ?? null,
-      paymentMethod: dto.paymentMethod ?? null,
-      // 50% reservation down-payment.
-      downpaymentAmount: Math.round((totalPrice / 2) * 100) / 100,
-      downpaymentProof: dto.downpaymentProof ?? null,
-      notes: dto.notes ?? null,
+      yearsDriving: dto.yearsDriving ?? null,
+      purpose: dto.purpose,
+      estimatedTotal: dto.estimatedTotal ?? null,
+      estimateText: dto.estimateText,
+      totalPrice: dto.estimatedTotal ?? null,
       status: BookingStatus.PENDING,
     });
-
     const saved = await this.bookingRepository.save(booking);
 
-    // Once booked, the vehicle drops out of the public fleet until it's
-    // returned/completed (or the booking is declined/cancelled).
-    await this.vehiclesService.update(dto.vehicleId, {
-      status: VehicleStatus.BOOKED,
-    });
+    // Tell admins in real time; the live payload also updates their lists.
+    // Fire-and-forget: a notification failure must never lose the booking.
+    this.notifications.notifyNewBooking(saved).catch(() => undefined);
+    // Web push to admins' phones/laptops, also without waiting on it.
+    void this.push.notifyAdmins(saved);
 
-    // Reload with the eager client/vehicle relations so the admin notification
-    // (and the live list update) has the names and images it needs.
-    const full = await this.bookingRepository.findOne({
-      where: { id: saved.id },
-    });
-
-    // Notify admins in real time. Fire-and-forget: a notification failure must
-    // never fail the client's booking.
-    if (full) {
-      this.notifications.notifyNewBooking(full).catch(() => undefined);
-    }
-
-    return full ?? saved;
+    return { id: saved.id, reference: saved.reference };
   }
 
   findAll() {
     return this.bookingRepository.find({ order: { createdAt: 'DESC' } });
   }
 
-  findMine(clientId: number) {
-    return this.bookingRepository.find({
-      where: { clientId },
-      order: { createdAt: 'DESC' },
-    });
-  }
-
-  async findOneForClient(id: number, clientId: number) {
-    const booking = await this.bookingRepository.findOne({ where: { id } });
-    if (!booking) throw new NotFoundException('Booking not found');
-
-    // A client may only access their own bookings.
-    if (booking.clientId !== clientId) {
-      throw new ForbiddenException('This booking does not belong to you');
-    }
-    return booking;
-  }
-
-  async cancel(id: number, clientId: number) {
-    const booking = await this.findOneForClient(id, clientId);
-
-    if (booking.status === BookingStatus.CANCELLED) {
-      throw new BadRequestException('Booking is already cancelled');
-    }
-    if (
-      booking.status === BookingStatus.COMPLETED ||
-      booking.status === BookingStatus.RETURNED
-    ) {
-      throw new BadRequestException(
-        'Completed or returned bookings cannot be cancelled',
-      );
-    }
-
-    booking.status = BookingStatus.CANCELLED;
-    const saved = await this.bookingRepository.save(booking);
-
-    // Cancelling releases the vehicle back to the public fleet.
-    await this.vehiclesService.update(booking.vehicleId, {
-      status: VehicleStatus.AVAILABLE,
-    });
-
-    // Let admins know in real time (booking still carries its eager relations).
-    this.notifications.notifyBookingCancelled(saved).catch(() => undefined);
-
-    return saved;
-  }
-
-  // ---- Admin operations -------------------------------------------------
-
-  private async findOneOrFail(id: number) {
+  async findOne(id: number) {
     const booking = await this.bookingRepository.findOne({ where: { id } });
     if (!booking) throw new NotFoundException('Booking not found');
     return booking;
   }
 
   // Allowed status transitions for the admin workflow.
-  private static readonly TRANSITIONS: Record<BookingStatus, BookingStatus[]> = {
-    [BookingStatus.PENDING]: [
-      BookingStatus.APPROVED,
-      BookingStatus.DECLINED,
-      BookingStatus.CANCELLED,
-    ],
-    [BookingStatus.APPROVED]: [
-      BookingStatus.RETURNED,
-      BookingStatus.COMPLETED,
-      BookingStatus.CANCELLED,
-    ],
-    [BookingStatus.RETURNED]: [BookingStatus.COMPLETED],
-    [BookingStatus.DECLINED]: [],
-    [BookingStatus.COMPLETED]: [],
-    [BookingStatus.CANCELLED]: [],
-  };
+  private static readonly TRANSITIONS: Record<BookingStatus, BookingStatus[]> =
+    {
+      [BookingStatus.PENDING]: [
+        BookingStatus.APPROVED,
+        BookingStatus.DECLINED,
+        BookingStatus.CANCELLED,
+      ],
+      [BookingStatus.APPROVED]: [
+        BookingStatus.RETURNED,
+        BookingStatus.COMPLETED,
+        BookingStatus.CANCELLED,
+      ],
+      [BookingStatus.RETURNED]: [BookingStatus.COMPLETED],
+      [BookingStatus.DECLINED]: [],
+      [BookingStatus.COMPLETED]: [],
+      [BookingStatus.CANCELLED]: [],
+    };
 
   async updateStatus(id: number, dto: UpdateBookingStatusDto) {
-    const booking = await this.findOneOrFail(id);
+    const booking = await this.findOne(id);
 
     if (booking.status === dto.status) return booking;
 
@@ -238,70 +163,150 @@ export class BookingsService {
       );
     }
 
-    // A booking can only be approved after the admin has validated the
-    // client's submitted documents and payment.
-    if (dto.status === BookingStatus.APPROVED && !booking.documentsVerified) {
-      throw new BadRequestException(
-        'Validate the client documents and payment before approving',
-      );
-    }
-
     booking.status = dto.status;
     const saved = await this.bookingRepository.save(booking);
 
-    // Keep the vehicle's availability in sync so booked cars drop out of the
-    // public fleet until they're returned or completed.
+    // Keep the assigned vehicle's availability in sync.
     const vehicleStatus = VEHICLE_STATUS_FOR_BOOKING[dto.status];
-    if (vehicleStatus) {
+    if (vehicleStatus && booking.vehicleId) {
       await this.vehiclesService.update(booking.vehicleId, {
         status: vehicleStatus,
       });
     }
 
-    // Push the change to the owning client's live stream (approve, complete,
-    // decline, return, cancel) so their screen updates without a refresh.
-    this.bookingEvents$.next(saved);
-
+    // Approving = confirming: tell the customer automatically, by email and text.
+    // The approval stands even if a message can't be sent; the admin sees why.
+    if (dto.status === BookingStatus.APPROVED) {
+      return this.sendConfirmation(saved);
+    }
     return saved;
   }
 
-  async update(id: number, dto: UpdateBookingDto) {
-    const booking = await this.findOneOrFail(id);
+  // Sends the "booking confirmed" email and text again for an approved booking.
+  async resendConfirmation(id: number) {
+    const booking = await this.findOne(id);
+    if (booking.status !== BookingStatus.APPROVED) {
+      throw new BadRequestException(
+        'Only approved bookings get a confirmation message',
+      );
+    }
+    return this.sendConfirmation(booking);
+  }
 
-    const start = new Date(dto.startDate ?? booking.startDate);
-    const end = new Date(dto.endDate ?? booking.endDate);
-    if (end <= start) {
-      throw new BadRequestException('End date must be after start date');
+  // Emails and texts the customer at the same time. Returns the booking plus
+  // what happened with each message.
+  private async sendConfirmation(booking: Booking) {
+    // Reload so the messages have the assigned car's details.
+    const full = await this.findOne(booking.id);
+    const [confirmationEmail, confirmationSms] = await Promise.all([
+      this.mail.sendBookingConfirmed(full),
+      this.sms.sendBookingConfirmed(full),
+    ]);
+    const now = new Date();
+    if (confirmationEmail.sent) full.confirmationEmailSentAt = now;
+    if (confirmationSms.sent) full.confirmationSmsSentAt = now;
+    if (confirmationEmail.sent || confirmationSms.sent) {
+      await this.bookingRepository.update(full.id, {
+        confirmationEmailSentAt: full.confirmationEmailSentAt,
+        confirmationSmsSentAt: full.confirmationSmsSentAt,
+      });
+    }
+    return { ...full, confirmationEmail, confirmationSms };
+  }
+
+  async update(id: number, dto: UpdateBookingDto) {
+    const booking = await this.findOne(id);
+
+    const startDate = dto.startDate?.slice(0, 10) ?? booking.startDate;
+    const days = dto.days ?? booking.days;
+    const endDate = addDays(startDate, days);
+
+    // Assigning (or swapping) the fleet vehicle.
+    const previousVehicleId = booking.vehicleId;
+    const vehicleChanged =
+      dto.vehicleId !== undefined && dto.vehicleId !== previousVehicleId;
+    if (vehicleChanged && dto.vehicleId != null) {
+      const vehicle = await this.vehiclesService.findOne(dto.vehicleId);
+      if (vehicle.status === VehicleStatus.MAINTENANCE) {
+        throw new BadRequestException('That vehicle is under maintenance');
+      }
+    }
+    const vehicleId = vehicleChanged
+      ? (dto.vehicleId ?? null)
+      : booking.vehicleId;
+    if (vehicleId && ACTIVE_STATUSES.includes(booking.status)) {
+      await this.assertVehicleFree(vehicleId, startDate, endDate, booking.id);
     }
 
     Object.assign(booking, {
-      startDate: dto.startDate ?? booking.startDate,
-      endDate: dto.endDate ?? booking.endDate,
+      startDate,
+      endDate,
+      days,
+      pickupTime: dto.pickupTime ?? booking.pickupTime,
       driveType: dto.driveType ?? booking.driveType,
       handover: dto.handover ?? booking.handover,
       location: dto.location ?? booking.location,
-      pickupTime: dto.pickupTime ?? booking.pickupTime,
-      notes: dto.notes ?? booking.notes,
+      totalPrice:
+        dto.totalPrice !== undefined ? dto.totalPrice : booking.totalPrice,
+      paymentMethod:
+        dto.paymentMethod !== undefined
+          ? dto.paymentMethod
+          : booking.paymentMethod,
       paymentStatus: dto.paymentStatus ?? booking.paymentStatus,
-      documentsVerified: dto.documentsVerified ?? booking.documentsVerified,
+      notes: dto.notes ?? booking.notes,
+      customerEmail:
+        dto.customerEmail !== undefined
+          ? dto.customerEmail.trim() || null
+          : booking.customerEmail,
     });
-
-    // Recompute the total (and 50% down-payment) if the dates changed.
-    if (dto.startDate || dto.endDate) {
-      const days = Math.ceil(
-        (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24),
-      );
-      booking.totalPrice = days * Number(booking.vehicle.dailyRate);
-      booking.downpaymentAmount =
-        Math.round((booking.totalPrice / 2) * 100) / 100;
+    if (vehicleChanged) {
+      // Point the eager relation at the new car too, or save() would write the
+      // stale relation's id back over vehicleId.
+      booking.vehicleId = vehicleId;
+      booking.vehicle = vehicleId ? ({ id: vehicleId } as Vehicle) : null;
     }
 
     const saved = await this.bookingRepository.save(booking);
 
-    // Reflect admin edits (dates, payment validation, etc.) on the client's
-    // live stream too.
-    this.bookingEvents$.next(saved);
+    // Swapping the car on a confirmed booking moves the "Booked" flag with it.
+    if (vehicleChanged && booking.status === BookingStatus.APPROVED) {
+      if (previousVehicleId) {
+        await this.vehiclesService.update(previousVehicleId, {
+          status: VehicleStatus.AVAILABLE,
+        });
+      }
+      if (vehicleId) {
+        await this.vehiclesService.update(vehicleId, {
+          status: VehicleStatus.BOOKED,
+        });
+      }
+    }
 
-    return saved;
+    // Reload so the response carries the (new) vehicle relation.
+    return this.findOne(saved.id);
+  }
+
+  // Rejects assigning a vehicle that another active booking already holds on
+  // overlapping dates.
+  private async assertVehicleFree(
+    vehicleId: number,
+    startDate: string,
+    endDate: string,
+    excludeId: number,
+  ) {
+    const clash = await this.bookingRepository
+      .createQueryBuilder('b')
+      .where('b.vehicleId = :vehicleId', { vehicleId })
+      .andWhere({ id: Not(excludeId), status: In(ACTIVE_STATUSES) })
+      .andWhere('b.startDate < :endDate AND b.endDate > :startDate', {
+        startDate,
+        endDate,
+      })
+      .getOne();
+    if (clash) {
+      throw new BadRequestException(
+        `That vehicle is already assigned to booking ${clash.reference} on overlapping dates`,
+      );
+    }
   }
 }

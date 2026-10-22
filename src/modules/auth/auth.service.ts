@@ -1,4 +1,8 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcryptjs';
 
@@ -6,6 +10,7 @@ import { UsersService } from '../users/users.service';
 import { User, UserRole } from '../users/entities/user.entity';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
+import { ChangePasswordDto } from './dto/account.dto';
 import { JwtPayload } from './auth.types';
 
 @Injectable()
@@ -17,12 +22,7 @@ export class AuthService {
     private readonly jwtService: JwtService,
   ) {}
 
-  // Public self-registration always creates a CLIENT account.
-  async register(dto: RegisterDto) {
-    return this.createAccount(dto, UserRole.CLIENT);
-  }
-
-  // Admin-provisioned account with an explicit role (admin or client).
+  // Admin-provisioned account. There is no public self-registration.
   async createAccount(dto: RegisterDto, role: UserRole) {
     const password = await bcrypt.hash(dto.password, AuthService.SALT_ROUNDS);
 
@@ -56,6 +56,19 @@ export class AuthService {
     }
 
     return this.buildAuthResponse(user);
+  }
+
+  // Checks the current password, saves the new one, and invalidates every
+  // existing session. Returns a fresh token for the session that made the change.
+  async changePassword(userId: number, dto: ChangePasswordDto) {
+    const user = await this.usersService.findByIdWithPassword(userId);
+    if (!user || !(await bcrypt.compare(dto.currentPassword, user.password))) {
+      throw new BadRequestException('Current password is incorrect');
+    }
+    const hash = await bcrypt.hash(dto.newPassword, AuthService.SALT_ROUNDS);
+    await this.usersService.setPassword(userId, hash);
+    await this.usersService.bumpTokenVersion(userId);
+    return this.buildAuthResponse(await this.usersService.findOne(userId));
   }
 
   // Stateless JWT logout: bump tokenVersion so every existing token is rejected.

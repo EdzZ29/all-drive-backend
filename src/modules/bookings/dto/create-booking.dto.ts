@@ -1,87 +1,109 @@
 /* eslint-disable @typescript-eslint/no-unsafe-call */
 import {
-  IsDateString,
+  IsEmail,
   IsEnum,
   IsInt,
+  IsNumber,
   IsOptional,
   IsString,
   Matches,
+  Max,
   MaxLength,
+  Min,
+  MinLength,
 } from 'class-validator';
 
-import {
-  DriveType,
-  HandoverMethod,
-  PaymentMethod,
-} from '../entities/booking.entity';
+import { DriveType } from '../entities/booking.entity';
 
-// Philippine driver's license format, e.g. N02-12-345678.
-const LICENSE_REGEX = /^[A-Za-z]\d{2}-\d{2}-\d{6}$/;
-
+// A booking request from the public website's booking form. The website
+// validates and prices it on its server first, then forwards it here.
 export class CreateBookingDto {
+  // The website's reference (also used in its emails/SMS). Generated here if
+  // missing.
+  @IsOptional()
+  @Matches(/^AD-\d{4}-[A-Z0-9]{4}$/, { message: 'Invalid booking reference' })
+  reference?: string;
+
+  @IsString()
+  @MinLength(1)
+  @MaxLength(100)
+  name!: string;
+
+  @IsString()
+  @MinLength(7)
+  @MaxLength(30)
+  contact!: string;
+
+  @IsOptional()
+  @IsEmail()
+  @MaxLength(120)
+  email?: string;
+
+  @IsString()
+  @MaxLength(200)
+  address!: string;
+
+  @IsString()
+  @MaxLength(200)
+  work!: string;
+
+  @IsString()
+  @MaxLength(120)
+  destination!: string;
+
+  @IsString()
+  @MaxLength(60)
+  zone!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  specificPlace?: string;
+
+  // Local Philippine date & time from the form, e.g. "2026-10-21T10:00".
+  @Matches(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/, {
+    message: 'pickup must look like 2026-10-21T10:00',
+  })
+  pickup!: string;
+
   @IsInt()
-  vehicleId!: number;
-
-  @IsDateString()
-  startDate!: string;
-
-  @IsDateString()
-  endDate!: string;
+  @Min(1)
+  @Max(60)
+  days!: number;
 
   @IsEnum(DriveType)
   driveType!: DriveType;
 
-  @IsEnum(HandoverMethod)
-  handover!: HandoverMethod;
-
   @IsOptional()
-  @IsString()
-  @MaxLength(255)
-  location?: string;
+  @IsInt()
+  @Min(0)
+  @Max(70)
+  yearsDriving?: number;
 
-  @IsOptional()
   @IsString()
   @MaxLength(20)
-  pickupTime?: string;
+  carCategory!: string;
 
-  @IsOptional()
-  @IsString()
-  @MaxLength(30)
-  contactPhone?: string;
-
-  // --- Requirements / documents ---
   @IsOptional()
   @IsString()
   @MaxLength(60)
-  idType?: string;
+  carModel?: string;
 
-  @IsOptional()
   @IsString()
-  @MaxLength(255)
-  idImage?: string;
+  @MaxLength(120)
+  carLabel!: string;
 
-  @IsOptional()
-  @Matches(LICENSE_REGEX, {
-    message: 'License number must look like N02-12-345678',
-  })
-  licenseNumber?: string;
-
-  @IsOptional()
   @IsString()
-  @MaxLength(255)
-  licenseImage?: string;
+  @MaxLength(500)
+  purpose!: string;
 
-  // --- Payment ---
+  // Omitted when the rate is on request.
   @IsOptional()
-  @IsEnum(PaymentMethod)
-  paymentMethod?: PaymentMethod;
+  @IsNumber()
+  @Min(0)
+  estimatedTotal?: number;
 
-  @IsOptional()
   @IsString()
-  @MaxLength(255)
-  downpaymentProof?: string;
-
-  @IsOptional()
-  @IsString()
-  notes?: string;
+  @MaxLength(120)
+  estimateText!: string;
 }

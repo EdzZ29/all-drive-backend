@@ -1,77 +1,30 @@
 import {
-  BadRequestException,
   Controller,
   Post,
   UploadedFile,
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { diskStorage } from 'multer';
-import { extname } from 'path';
+import { memoryStorage } from 'multer';
 
+import { UploadsService } from './uploads.service';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '../users/entities/user.entity';
 
-const UPLOAD_DIR = './uploads';
-const ALLOWED = /\.(jpg|jpeg|png|webp|gif)$/i;
-// Booking documents (IDs, licenses, payment receipts) may also be PDFs.
-const ALLOWED_DOCS = /\.(jpg|jpeg|png|webp|gif|pdf)$/i;
-
-const diskStore = diskStorage({
-  destination: UPLOAD_DIR,
-  filename: (_req, file, cb) => {
-    // Unique, collision-safe name; keep the original extension.
-    const unique = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
-    cb(null, `${unique}${extname(file.originalname)}`);
-  },
-});
-
 @Controller('uploads')
 export class UploadsController {
-  // Admin-only image upload. Returns a URL the client stores on the vehicle.
+  constructor(private readonly uploads: UploadsService) {}
+
+  // Admin-only image upload (car photos). Returns the URL to store.
   @Roles(UserRole.ADMIN)
   @Post('image')
   @UseInterceptors(
     FileInterceptor('file', {
-      storage: diskStore,
-      limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB
-      fileFilter: (_req, file, cb) => {
-        if (!ALLOWED.test(file.originalname)) {
-          return cb(
-            new BadRequestException('Only image files are allowed'),
-            false,
-          );
-        }
-        cb(null, true);
-      },
+      storage: memoryStorage(),
+      limits: { fileSize: 5 * 1024 * 1024, files: 1 }, // 5 MB
     }),
   )
   uploadImage(@UploadedFile() file: Express.Multer.File) {
-    if (!file) throw new BadRequestException('No file uploaded');
-    // Served statically under /uploads (see main.ts).
-    return { url: `/uploads/${file.filename}`, filename: file.filename };
-  }
-
-  // Booking documents — any authenticated user (clients upload their ID,
-  // driver's license and payment receipt during booking). Images or PDF.
-  @Post('document')
-  @UseInterceptors(
-    FileInterceptor('file', {
-      storage: diskStore,
-      limits: { fileSize: 8 * 1024 * 1024 }, // 8 MB
-      fileFilter: (_req, file, cb) => {
-        if (!ALLOWED_DOCS.test(file.originalname)) {
-          return cb(
-            new BadRequestException('Only image or PDF files are allowed'),
-            false,
-          );
-        }
-        cb(null, true);
-      },
-    }),
-  )
-  uploadDocument(@UploadedFile() file: Express.Multer.File) {
-    if (!file) throw new BadRequestException('No file uploaded');
-    return { url: `/uploads/${file.filename}`, filename: file.filename };
+    return this.uploads.saveImage(file, 'cars');
   }
 }

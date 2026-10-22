@@ -6,22 +6,32 @@ import { map } from 'rxjs/operators';
 
 import { Notification, NotificationType } from './entities/notification.entity';
 
-// The minimal shape of a booking this service needs to describe a notification.
-// Kept as a local interface so the notifications module stays decoupled from
-// the bookings module (it only imports the type, not the entity at runtime).
+// The minimal shapes this service needs to describe a notification. Kept as
+// local interfaces so the notifications module stays decoupled from the
+// bookings/inquiries modules (no runtime imports of their entities).
 interface BookingLike {
   id: number;
-  clientId: number;
-  vehicleId: number;
+  reference: string;
+  customerName: string;
+  carLabel: string;
   startDate: string;
-  endDate: string;
-  client?: { name?: string | null } | null;
-  vehicle?: { brand?: string | null; model?: string | null } | null;
+  pickupTime: string | null;
+  days: number;
 }
 
-// A live notification carries the persisted row plus, for booking events, the
-// full booking so the admin UI can update its list without re-fetching.
-type LiveNotification = Notification & { booking?: BookingLike };
+interface InquiryLike {
+  id: number;
+  name: string;
+  topic: string;
+  message: string;
+}
+
+// A live notification carries the persisted row plus the full booking or
+// inquiry, so the admin UI can update its lists without re-fetching.
+type LiveNotification = Notification & {
+  booking?: BookingLike;
+  inquiry?: InquiryLike;
+};
 
 @Injectable()
 export class NotificationsService {
@@ -55,29 +65,32 @@ export class NotificationsService {
     return { success: true };
   }
 
-  // A client placed a new booking / reservation.
+  // A booking request arrived from the website.
   notifyNewBooking(booking: BookingLike) {
+    const when = [booking.startDate, booking.pickupTime].filter(Boolean);
     return this.emit(
       {
         type: NotificationType.BOOKING,
-        title: 'New booking request',
-        message: `${clientName(booking)} requested ${vehicleName(booking)} · ${booking.startDate} → ${booking.endDate}`,
+        title: `New booking ${booking.reference}`,
+        message: truncate(
+          `${booking.customerName} · ${booking.carLabel} · ${when.join(' ')} · ${booking.days} day${booking.days > 1 ? 's' : ''}`,
+        ),
         bookingId: booking.id,
       },
-      booking,
+      { booking },
     );
   }
 
-  // A client cancelled their booking.
-  notifyBookingCancelled(booking: BookingLike) {
+  // A message arrived from the website's contact form.
+  notifyNewInquiry(inquiry: InquiryLike) {
     return this.emit(
       {
-        type: NotificationType.BOOKING_CANCELLED,
-        title: 'Booking cancelled',
-        message: `${clientName(booking)} cancelled their booking for ${vehicleName(booking)}`,
-        bookingId: booking.id,
+        type: NotificationType.INQUIRY,
+        title: `New inquiry: ${inquiry.topic}`.slice(0, 160),
+        message: truncate(`${inquiry.name}: ${inquiry.message}`),
+        inquiryId: inquiry.id,
       },
-      booking,
+      { inquiry },
     );
   }
 
@@ -94,31 +107,28 @@ export class NotificationsService {
   }
 
   // Persist a notification and push it to connected admins. The persisted row
-  // never stores the booking object — that's attached only to the live payload.
+  // never stores the booking/inquiry object; that's only on the live payload.
   private async emit(
     partial: Pick<Notification, 'type' | 'title' | 'message'> & {
-      bookingId?: number | null;
+      bookingId?: number;
+      inquiryId?: number;
     },
-    booking?: BookingLike,
+    live: Pick<LiveNotification, 'booking' | 'inquiry'>,
   ) {
     const notification = this.repo.create({
       type: partial.type,
       title: partial.title,
       message: partial.message,
       bookingId: partial.bookingId ?? null,
+      inquiryId: partial.inquiryId ?? null,
     });
     const saved = await this.repo.save(notification);
-    this.events$.next({ ...saved, ...(booking ? { booking } : {}) });
+    this.events$.next({ ...saved, ...live });
     return saved;
   }
 }
 
-function clientName(booking: BookingLike) {
-  return booking.client?.name ?? `Client #${booking.clientId}`;
-}
-
-function vehicleName(booking: BookingLike) {
-  return booking.vehicle
-    ? `${booking.vehicle.brand ?? ''} ${booking.vehicle.model ?? ''}`.trim()
-    : `Vehicle #${booking.vehicleId}`;
+// The message column holds 500 characters.
+function truncate(text: string, max = 500) {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }

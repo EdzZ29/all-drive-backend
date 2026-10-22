@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
@@ -14,8 +18,12 @@ export class VehiclesService {
   ) {}
 
   async create(dto: CreateVehicleDto) {
-    const vehicle = this.vehicleRepository.create(dto);
-    return this.vehicleRepository.save(vehicle);
+    // description is required in the table but optional in the form.
+    const vehicle = this.vehicleRepository.create({
+      ...dto,
+      description: dto.description ?? '',
+    });
+    return this.vehicleRepository.save(vehicle).catch(duplicatePlate);
   }
 
   async findAll() {
@@ -41,7 +49,7 @@ export class VehiclesService {
 
     Object.assign(vehicle, dto);
 
-    return this.vehicleRepository.save(vehicle);
+    return this.vehicleRepository.save(vehicle).catch(duplicatePlate);
   }
 
   async remove(id: number) {
@@ -53,4 +61,12 @@ export class VehiclesService {
       message: 'Vehicle deleted successfully',
     };
   }
+}
+
+// Postgres unique violation on plateNumber -> a clear 409 instead of a 500.
+function duplicatePlate(err: unknown): never {
+  if ((err as { code?: string }).code === '23505') {
+    throw new ConflictException('Another car already has this plate number');
+  }
+  throw err;
 }

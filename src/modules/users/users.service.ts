@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Injectable,
   NotFoundException,
   ConflictException,
@@ -32,7 +33,7 @@ export class UsersService {
 
     const user = this.userRepository.create({
       ...data,
-      role: data.role ?? UserRole.CLIENT,
+      role: data.role ?? UserRole.ADMIN,
     });
 
     return this.userRepository.save(user);
@@ -59,6 +60,37 @@ export class UsersService {
       .addSelect('user.password')
       .where('user.email = :email', { email })
       .getOne();
+  }
+
+  findByIdWithPassword(id: number) {
+    return this.userRepository
+      .createQueryBuilder('user')
+      .addSelect('user.password')
+      .where('user.id = :id', { id })
+      .getOne();
+  }
+
+  async setPassword(id: number, passwordHash: string) {
+    await this.userRepository.update({ id }, { password: passwordHash });
+  }
+
+  async updateProfile(id: number, data: { name?: string; phone?: string }) {
+    const user = await this.findOne(id);
+    if (data.name !== undefined) user.name = data.name.trim();
+    if (data.phone !== undefined) user.phone = data.phone.trim();
+    return this.userRepository.save(user);
+  }
+
+  // Deactivated admins can't sign in, and their open sessions end right away.
+  async setActive(id: number, isActive: boolean, actingUserId: number) {
+    if (id === actingUserId) {
+      throw new BadRequestException("You can't deactivate your own account");
+    }
+    const user = await this.findOne(id);
+    user.isActive = isActive;
+    const saved = await this.userRepository.save(user);
+    if (!isActive) await this.bumpTokenVersion(id);
+    return saved;
   }
 
   // Bumping tokenVersion invalidates every JWT previously issued to this user.

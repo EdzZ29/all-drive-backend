@@ -4,6 +4,7 @@ import {
   Get,
   HttpCode,
   HttpStatus,
+  Patch,
   Post,
   Res,
 } from '@nestjs/common';
@@ -13,6 +14,7 @@ import type { Response } from 'express';
 import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
+import { ChangePasswordDto, UpdateProfileDto } from './dto/account.dto';
 import { Public } from './decorators/public.decorator';
 import { Roles } from './decorators/roles.decorator';
 import { CurrentUser } from './decorators/current-user.decorator';
@@ -35,19 +37,9 @@ export class AuthController {
     private readonly config: ConfigService,
   ) {}
 
-  // Guest self-registration -> creates a CLIENT account.
+  // Admin sign-in. There is no public registration: customers use the website
+  // without an account, and admins are added by another admin (POST /admins).
   // passthrough:true lets us set the auth cookie while still returning JSON.
-  @Public()
-  @Post('register')
-  async register(
-    @Body() dto: RegisterDto,
-    @Res({ passthrough: true }) res: Response,
-  ) {
-    const result = await this.authService.register(dto);
-    this.setAuthCookie(res, result.accessToken);
-    return result;
-  }
-
   @Public()
   @HttpCode(HttpStatus.OK)
   @Post('login')
@@ -78,11 +70,33 @@ export class AuthController {
     return this.usersService.findOne(id);
   }
 
-  // Admin-only: provision a new admin/staff account.
+  // Edit your own name / phone.
+  @Patch('me')
+  updateMe(@CurrentUser('id') id: number, @Body() dto: UpdateProfileDto) {
+    return this.usersService.updateProfile(id, dto);
+  }
+
+  // Signs out every other session, and keeps this one signed in with a new
+  // cookie.
+  @HttpCode(HttpStatus.OK)
+  @Post('change-password')
+  async changePassword(
+    @CurrentUser('id') id: number,
+    @Body() dto: ChangePasswordDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const result = await this.authService.changePassword(id, dto);
+    this.setAuthCookie(res, result.accessToken);
+    return { message: 'Password changed' };
+  }
+
+  // Admin-only: provision another admin/staff account. Returns the new user
+  // only; the new admin signs in with their own password.
   @Roles(UserRole.ADMIN)
   @Post('admins')
-  createAdmin(@Body() dto: RegisterDto) {
-    return this.authService.createAccount(dto, UserRole.ADMIN);
+  async createAdmin(@Body() dto: RegisterDto) {
+    const { user } = await this.authService.createAccount(dto, UserRole.ADMIN);
+    return user;
   }
 
   private isProduction() {
@@ -102,6 +116,9 @@ export class AuthController {
 
   private clearAuthCookie(res: Response) {
     // Options (except maxAge/expires) must match those used when setting it.
-    res.clearCookie(ACCESS_TOKEN_COOKIE, baseCookieOptions(this.isProduction()));
+    res.clearCookie(
+      ACCESS_TOKEN_COOKIE,
+      baseCookieOptions(this.isProduction()),
+    );
   }
 }

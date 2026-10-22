@@ -8,7 +8,6 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 
-import { User } from '../../users/entities/user.entity';
 import { Vehicle } from '../../vehicles/entities/vehicles.entity';
 
 export enum BookingStatus {
@@ -20,19 +19,19 @@ export enum BookingStatus {
   CANCELLED = 'Cancelled',
 }
 
-// How the client wants to drive the vehicle.
+// How the customer wants to drive the vehicle.
 export enum DriveType {
   SELF_DRIVE = 'Self Drive',
   WITH_DRIVER = 'With Driver',
 }
 
-// How the vehicle changes hands: the client picks it up, or we deliver/drop it.
+// How the vehicle changes hands: the customer picks it up, or we deliver it.
 export enum HandoverMethod {
   PICKUP = 'Pickup',
   DELIVERY = 'Delivery',
 }
 
-// Accepted down-payment / payment methods.
+// Accepted payment methods (recorded by the admin).
 export enum PaymentMethod {
   GCASH = 'GCash',
   MAYA = 'Maya',
@@ -40,40 +39,94 @@ export enum PaymentMethod {
   CASH = 'Cash',
 }
 
-// How much of the total has actually been paid (set by admin after validating).
+// How much of the total has been paid (set by the admin).
 export enum PaymentStatus {
   UNPAID = 'Unpaid',
   DOWNPAYMENT = 'Down Payment',
   FULLY_PAID = 'Fully Paid',
 }
 
+// A reservation request. Customers don't have accounts: the website's booking
+// form sends their details, and an admin confirms by phone, assigns a car from
+// the fleet and manages the booking from the dashboard.
 @Entity('bookings')
 export class Booking {
   @PrimaryGeneratedColumn()
   id!: number;
 
-  @ManyToOne(() => User, { eager: true, onDelete: 'CASCADE' })
-  @JoinColumn({ name: 'clientId' })
-  client!: User;
+  // Short reference shown to the customer, e.g. "AD-1013-7K2Q".
+  @Column({ type: 'varchar', length: 20, unique: true })
+  reference!: string;
 
-  @Column()
-  clientId!: number;
+  // --- Customer ------------------------------------------------------------
 
-  @ManyToOne(() => Vehicle, { eager: true, onDelete: 'CASCADE' })
+  @Column({ type: 'varchar', length: 100 })
+  customerName!: string;
+
+  @Column({ type: 'varchar', length: 30 })
+  customerPhone!: string;
+
+  @Column({ type: 'varchar', length: 120, nullable: true })
+  customerEmail!: string | null;
+
+  @Column({ type: 'varchar', length: 200, default: '' })
+  customerAddress!: string;
+
+  // Work place / business.
+  @Column({ type: 'varchar', length: 200, default: '' })
+  customerWork!: string;
+
+  // --- Car requested -------------------------------------------------------
+
+  // Website car class: sedan | mpv | suv | van.
+  @Column({ type: 'varchar', length: 20, nullable: true })
+  carCategory!: string | null;
+
+  // Website model id (e.g. "toyota-vios"); null means "any car in the class".
+  @Column({ type: 'varchar', length: 60, nullable: true })
+  carModel!: string | null;
+
+  // What the customer picked, as shown to them, e.g. "Toyota Vios (Sedan)".
+  @Column({ type: 'varchar', length: 120, default: '' })
+  carLabel!: string;
+
+  // The fleet unit the admin assigns. Optional until the booking is handled.
+  @ManyToOne(() => Vehicle, {
+    eager: true,
+    nullable: true,
+    onDelete: 'SET NULL',
+  })
   @JoinColumn({ name: 'vehicleId' })
-  vehicle!: Vehicle;
+  vehicle!: Vehicle | null;
 
-  @Column()
-  vehicleId!: number;
+  @Column({ type: 'int', nullable: true })
+  vehicleId!: number | null;
 
+  // --- Trip ----------------------------------------------------------------
+
+  @Column({ type: 'varchar', length: 120, default: '' })
+  destination!: string;
+
+  // Rate zone label, e.g. "Within Caraga".
+  @Column({ type: 'varchar', length: 60, default: '' })
+  rateZone!: string;
+
+  @Column({ type: 'varchar', length: 200, nullable: true })
+  specificPlace!: string | null;
+
+  // Pickup date; endDate is the return date (startDate + days).
   @Column({ type: 'date' })
   startDate!: string;
 
   @Column({ type: 'date' })
   endDate!: string;
 
-  @Column('decimal')
-  totalPrice!: number;
+  // Pickup time, e.g. "10:00" (Philippine time).
+  @Column({ type: 'varchar', length: 20, nullable: true })
+  pickupTime!: string | null;
+
+  @Column({ type: 'int', default: 1 })
+  days!: number;
 
   @Column({
     type: 'enum',
@@ -82,6 +135,13 @@ export class Booking {
   })
   driveType!: DriveType;
 
+  // Self-drive only.
+  @Column({ type: 'int', nullable: true })
+  yearsDriving!: number | null;
+
+  @Column({ type: 'text', default: '' })
+  purpose!: string;
+
   @Column({
     type: 'enum',
     enum: HandoverMethod,
@@ -89,49 +149,27 @@ export class Booking {
   })
   handover!: HandoverMethod;
 
-  // Pickup point (for Pickup) or delivery address (for Delivery).
+  // Pickup point or delivery address, set by the admin when confirming.
   @Column({ type: 'varchar', length: 255, nullable: true })
   location!: string | null;
 
-  // Preferred handover time, e.g. '10:00'. Stored as free text for flexibility.
-  @Column({ type: 'varchar', length: 20, nullable: true })
-  pickupTime!: string | null;
+  // --- Price & payment -----------------------------------------------------
 
-  @Column({ type: 'varchar', length: 30, nullable: true })
-  contactPhone!: string | null;
+  // Website estimate; null when the rate is "on request" (e.g. vans).
+  @Column('decimal', { nullable: true })
+  estimatedTotal!: number | null;
 
-  // --- Requirements / documents -----------------------------------------
+  // The estimate as the customer saw it, e.g. "₱3,600 (incl. ₱1,000/day driver)".
+  @Column({ type: 'varchar', length: 120, default: '' })
+  estimateText!: string;
 
-  // The type of valid ID submitted (Student ID is not accepted).
-  @Column({ type: 'varchar', length: 60, nullable: true })
-  idType!: string | null;
-
-  // Uploaded file URL for the valid ID.
-  @Column({ type: 'varchar', length: 255, nullable: true })
-  idImage!: string | null;
-
-  // Driver's license number (Self Drive) — validated format on input.
-  @Column({ type: 'varchar', length: 40, nullable: true })
-  licenseNumber!: string | null;
-
-  // Uploaded file URL for the driver's license (Self Drive).
-  @Column({ type: 'varchar', length: 255, nullable: true })
-  licenseImage!: string | null;
-
-  // --- Payment -----------------------------------------------------------
+  // Final agreed price, confirmed by the admin. Starts as the estimate.
+  @Column('decimal', { nullable: true })
+  totalPrice!: number | null;
 
   @Column({ type: 'enum', enum: PaymentMethod, nullable: true })
   paymentMethod!: PaymentMethod | null;
 
-  // 50% reservation down-payment amount.
-  @Column('decimal', { nullable: true })
-  downpaymentAmount!: number | null;
-
-  // Uploaded proof/receipt of the down-payment.
-  @Column({ type: 'varchar', length: 255, nullable: true })
-  downpaymentProof!: string | null;
-
-  // Payment progress — admin sets this after validating the receipt.
   @Column({
     type: 'enum',
     enum: PaymentStatus,
@@ -139,11 +177,7 @@ export class Booking {
   })
   paymentStatus!: PaymentStatus;
 
-  // Admin confirms the submitted documents/payment are valid. Required before
-  // a booking can be approved.
-  @Column({ type: 'boolean', default: false })
-  documentsVerified!: boolean;
-
+  // Internal admin notes.
   @Column({ type: 'text', nullable: true })
   notes!: string | null;
 
@@ -153,6 +187,14 @@ export class Booking {
     default: BookingStatus.PENDING,
   })
   status!: BookingStatus;
+
+  // When the "booking confirmed" email last reached the customer (null = not sent).
+  @Column({ type: 'timestamp', nullable: true })
+  confirmationEmailSentAt!: Date | null;
+
+  // When the "booking confirmed" text (SMS) last reached the customer.
+  @Column({ type: 'timestamp', nullable: true })
+  confirmationSmsSentAt!: Date | null;
 
   @CreateDateColumn()
   createdAt!: Date;

@@ -6,10 +6,12 @@ import {
 } from 'typeorm';
 
 // Kinds of admin notification. Extend this as more events need surfacing
-// (payments, reviews, maintenance, and — once it exists — inquiries).
+// (payments, reviews, maintenance).
 export enum NotificationType {
+  // A booking request arrived from the website.
   BOOKING = 'booking',
-  BOOKING_CANCELLED = 'booking_cancelled',
+  // A message arrived from the website's contact form.
+  INQUIRY = 'inquiry',
 }
 
 @Entity('notifications')
@@ -34,6 +36,10 @@ export class Notification {
   // straight to it.
   @Column({ type: 'int', nullable: true })
   bookingId!: number | null;
+
+  // Likewise for an inquiry notification.
+  @Column({ type: 'int', nullable: true })
+  inquiryId!: number | null;
 
   // Whether an admin has seen/dismissed this notification.
   @Column({ type: 'boolean', default: false })

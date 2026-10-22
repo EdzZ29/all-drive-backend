@@ -6,9 +6,10 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 
+// Only staff have accounts. Customers book and send inquiries through the
+// public website without signing up, so there is no client role.
 export enum UserRole {
   ADMIN = 'admin',
-  CLIENT = 'client',
 }
 
 @Entity('users')
@@ -32,7 +33,7 @@ export class User {
   @Column({
     type: 'enum',
     enum: UserRole,
-    default: UserRole.CLIENT,
+    default: UserRole.ADMIN,
   })
   role!: UserRole;
 

@@ -3,13 +3,17 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import {
+  MIGRATIONS_GLOB,
+  connectionOptions,
+  shouldSynchronize,
+} from './database/database.options';
 import { UploadsModule } from './modules/uploads/uploads.module';
 import { SettingsModule } from './modules/settings/settings.module';
 import { SettingsService } from './modules/settings/settings.service';
 import { AuditLogsModule } from './modules/audit-logs/audit-logs.module';
 import { AuditLogsController } from './modules/audit-logs/audit-logs.controller';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
-import { DashboardService } from './modules/dashboard/dashboard.service';
 import { ReportsModule } from './modules/reports/reports.module';
 import { ReportsController } from './modules/reports/reports.controller';
 import { NotificationsModule } from './modules/notifications/notifications.module';
@@ -30,6 +34,10 @@ import { ClientsModule } from './modules/clients/clients.module';
 import { ClientsController } from './modules/clients/clients.controller';
 import { ClientsService } from './modules/clients/clients.service';
 import { AuthModule } from './modules/auth/auth.module';
+import { InquiriesModule } from './modules/inquiries/inquiries.module';
+import { WebsiteModule } from './modules/website/website.module';
+import { PushModule } from './modules/push/push.module';
+import { CatalogModule } from './modules/catalog/catalog.module';
 
 @Module({
   imports: [
@@ -38,21 +46,26 @@ import { AuthModule } from './modules/auth/auth.module';
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
-      useFactory: (config: ConfigService) => ({
-        type: 'postgres',
-        host: config.get<string>('DB_HOST'),
-        port: parseInt(config.get<string>('DB_PORT', '3000'), 10),
-        username: config.get<string>('DB_USERNAME'),
-        password: config.get<string>('DB_PASSWORD'),
-        database: config.get<string>('DB_DATABASE'),
-        autoLoadEntities: true,
-        synchronize: true,
-      }),
+      useFactory: (config: ConfigService) => {
+        const env = (key: string) => config.get<string>(key);
+        return {
+          ...connectionOptions(env),
+          autoLoadEntities: true,
+          // Locally the schema follows the entities; in production run
+          // `npm run migration:run` instead (see src/database/migrations).
+          synchronize: shouldSynchronize(env),
+          migrations: [MIGRATIONS_GLOB],
+        };
+      },
     }),
     ClientsModule,
     VehiclesModule,
     UsersModule,
     BookingsModule,
+    InquiriesModule,
+    WebsiteModule,
+    PushModule,
+    CatalogModule,
     PaymentsModule,
     DriversModule,
     ReviewsModule,
@@ -79,7 +92,6 @@ import { AuthModule } from './modules/auth/auth.module';
     ClientsService,
     DriversService,
     PromosService,
-    DashboardService,
     SettingsService,
   ],
 })
