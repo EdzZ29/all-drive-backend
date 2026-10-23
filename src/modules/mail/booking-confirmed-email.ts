@@ -87,8 +87,16 @@ export function buildBookingConfirmedEmail(b: ConfirmedBooking) {
       : requirements.selfDrive),
   ];
 
-  const rows: [string, string][] = [
-    ['Booking reference', b.reference],
+  // The website's "Track my booking" page, with the code already filled in.
+  const trackUrl = `${business.website}/track?ref=${encodeURIComponent(b.reference)}`;
+
+  // [label, value, extra HTML after the value]
+  const rows: [string, string, string?][] = [
+    [
+      'Booking reference',
+      b.reference,
+      ` &nbsp;<a href="${trackUrl}" style="display:inline-block;margin-top:2px;padding:3px 10px;border-radius:999px;background:${C.brand};color:${C.ink};font-size:12px;font-weight:bold;text-decoration:none;white-space:nowrap">Track booking &rarr;</a>`,
+    ],
     ['Car', car],
     ['Service', b.driveType],
     ['Destination', destination],
@@ -96,6 +104,42 @@ export function buildBookingConfirmedEmail(b: ConfirmedBooking) {
     ['Total', total],
     ['Payment', b.paymentStatus],
   ];
+
+  // Contact buttons, two per row so they fit phone screens.
+  const contactButtons = [
+    ...business.phones.map((p) => ({
+      href: `tel:${p.href}`,
+      label: `Call / text ${p.network}`,
+      sub: p.display,
+      bg: C.ink,
+    })),
+    {
+      href: `https://api.whatsapp.com/send?phone=${business.whatsappNumber}`,
+      label: 'WhatsApp',
+      sub: 'Chat with us',
+      bg: '#15803d',
+    },
+    {
+      href: business.messenger,
+      label: 'Messenger',
+      sub: 'Message our page',
+      bg: '#0866ff',
+    },
+  ].map(
+    (c) =>
+      `<a href="${c.href}" style="display:block;padding:11px 8px;border-radius:10px;background:${c.bg};color:#ffffff;text-align:center;text-decoration:none;font-size:14px;font-weight:bold;line-height:1.35">${escapeHtml(c.label)}<br><span style="font-size:12px;font-weight:normal;color:#e2e8f0">${escapeHtml(c.sub)}</span></a>`,
+  );
+  const contactGrid = Array.from(
+    { length: Math.ceil(contactButtons.length / 2) },
+    (_, i) =>
+      `<tr>${contactButtons
+        .slice(i * 2, i * 2 + 2)
+        .map(
+          (btn) =>
+            `<td width="50%" style="padding:4px;vertical-align:top">${btn}</td>`,
+        )
+        .join('')}</tr>`,
+  ).join('');
 
   const duration = `${b.days} day${b.days > 1 ? 's' : ''}`;
   const subject = `Your booking is approved (${b.reference}): ${car} on ${pickup}`;
@@ -110,6 +154,7 @@ export function buildBookingConfirmedEmail(b: ConfirmedBooking) {
     `Return: ${day(b.endDate)} (${duration})`,
     '',
     ...rows.map(([k, v]) => `${k}: ${v}`),
+    `Track your booking: ${trackUrl}`,
     '',
     'Please bring:',
     ...needs.map((n) => `- ${n}`),
@@ -161,9 +206,9 @@ export function buildBookingConfirmedEmail(b: ConfirmedBooking) {
           <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-size:14px;line-height:1.45">
             ${rows
               .map(
-                ([k, v]) => `<tr>
+                ([k, v, extra]) => `<tr>
               <td style="padding:9px 12px 9px 0;border-bottom:1px solid ${C.line};color:${C.muted};width:38%;vertical-align:top">${escapeHtml(k)}</td>
-              <td style="padding:9px 0;border-bottom:1px solid ${C.line};font-weight:bold;vertical-align:top;word-break:break-word">${escapeHtml(v)}</td>
+              <td style="padding:9px 0;border-bottom:1px solid ${C.line};font-weight:bold;vertical-align:top;word-break:break-word">${escapeHtml(v)}${extra ?? ''}</td>
             </tr>`,
               )
               .join('')}
@@ -177,15 +222,8 @@ export function buildBookingConfirmedEmail(b: ConfirmedBooking) {
           </table>
         </td></tr>
         <tr><td style="padding:20px 24px 0;font-size:14px;line-height:1.6">
-          <b>Questions or changes?</b> Reply to this email, or reach us:<br>
-          ${business.phones
-            .map(
-              (p) =>
-                `Call/text ${escapeHtml(p.network)}: <a href="tel:${p.href}" style="color:${C.ink};font-weight:bold">${escapeHtml(p.display)}</a>`,
-            )
-            .join('<br>')}<br>
-          <a href="https://api.whatsapp.com/send?phone=${business.whatsappNumber}" style="color:${C.ink}">WhatsApp</a> &middot;
-          <a href="${business.messenger}" style="color:${C.ink}">Messenger</a>
+          <b>Questions or changes?</b> Reply to this email, or reach us:
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:8px">${contactGrid}</table>
         </td></tr>
         <tr><td style="padding:16px 24px 24px;font-size:13px;line-height:1.6;color:${C.muted}">
           <b>Visit us:</b> ${escapeHtml(business.address)} &middot; <a href="${business.directionsUrl}" style="color:${C.ink}">Get directions</a>
