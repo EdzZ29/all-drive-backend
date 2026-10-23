@@ -7,10 +7,13 @@ import {
   ParseIntPipe,
   Patch,
   Post,
+  Query,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
 
 import { ChatService } from './chat.service';
-import { AdminReplyDto, UpdateChatDto } from './dto/chat.dto';
+import { AdminReplyDto, ChatsQueryDto, UpdateChatDto } from './dto/chat.dto';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { UserRole } from '../users/entities/user.entity';
@@ -23,9 +26,10 @@ import { UserRole } from '../users/entities/user.entity';
 export class ChatController {
   constructor(private readonly chat: ChatService) {}
 
+  // ?filter=Open|Closed|All&page=&limit=&q=
   @Get()
-  findAll() {
-    return this.chat.findAll();
+  list(@Query() query: ChatsQueryDto) {
+    return this.chat.list(query);
   }
 
   @Get(':id')
@@ -47,8 +51,15 @@ export class ChatController {
     return this.chat.setStatus(id, dto.status);
   }
 
+  // Hidden everywhere, but kept: POST :id/restore brings it back.
   @Delete(':id')
   remove(@Param('id', ParseIntPipe) id: number) {
     return this.chat.remove(id);
+  }
+
+  @HttpCode(HttpStatus.OK)
+  @Post(':id/restore')
+  restore(@Param('id', ParseIntPipe) id: number) {
+    return this.chat.restore(id);
   }
 }

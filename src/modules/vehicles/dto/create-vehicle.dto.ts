@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-unsafe-call */
 import { IsString, IsNumber, IsEnum, IsOptional } from 'class-validator';
 import { VehicleStatus } from '../entities/vehicles.entity';
 

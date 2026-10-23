@@ -5,6 +5,7 @@ import {
   CreateDateColumn,
   UpdateDateColumn,
   OneToMany,
+  DeleteDateColumn,
 } from 'typeorm';
 
 import { ChatMessage } from './chat-message.entity';
@@ -59,4 +60,8 @@ export class ChatConversation {
 
   @UpdateDateColumn()
   updatedAt!: Date;
+
+  // Set when deleted from the dashboard (hidden everywhere; can be restored).
+  @DeleteDateColumn()
+  deletedAt!: Date | null;
 }

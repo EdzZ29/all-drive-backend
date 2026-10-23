@@ -8,7 +8,6 @@ import { VehiclesModule } from '../vehicles/vehicles.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { PushModule } from '../push/push.module';
 import { MailModule } from '../mail/mail.module';
-import { SmsModule } from '../sms/sms.module';
 
 @Module({
   imports: [
@@ -17,7 +16,6 @@ import { SmsModule } from '../sms/sms.module';
     NotificationsModule,
     PushModule,
     MailModule,
-    SmsModule,
   ],
   controllers: [BookingsController],
   providers: [BookingsService],

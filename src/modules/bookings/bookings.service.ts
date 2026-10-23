@@ -19,7 +19,10 @@ import { Vehicle, VehicleStatus } from '../vehicles/entities/vehicles.entity';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PushService } from '../push/push.service';
 import { MailService } from '../mail/mail.service';
-import { SmsService } from '../sms/sms.service';
+import { AuditLogsService } from '../audit-logs/audit-logs.service';
+import { AuditActorType } from '../audit-logs/entities/audit-log.entity';
+import { likePattern, pageOf } from '../../common/pagination';
+import { BookingFilter, BookingsQueryDto } from './dto/bookings-query.dto';
 
 // When a booking becomes Approved its assigned vehicle is in use, so it's
 // marked Booked. Returning/completing/declining/cancelling frees it again.
@@ -32,6 +35,23 @@ const VEHICLE_STATUS_FOR_BOOKING: Partial<
   [BookingStatus.DECLINED]: VehicleStatus.AVAILABLE,
   [BookingStatus.CANCELLED]: VehicleStatus.AVAILABLE,
 };
+
+// Which statuses each tab of the admin bookings list shows.
+const FILTER_STATUSES: Record<
+  Exclude<BookingFilter, 'All'>,
+  BookingStatus[]
+> = {
+  Pending: [BookingStatus.PENDING],
+  Active: [BookingStatus.APPROVED, BookingStatus.RETURNED],
+  History: [
+    BookingStatus.COMPLETED,
+    BookingStatus.DECLINED,
+    BookingStatus.CANCELLED,
+  ],
+};
+
+const peso = (v: number | string | null) =>
+  v == null ? 'on request' : `₱${Number(v).toLocaleString('en-PH')}`;
 
 // Statuses that still hold the assigned vehicle (used for clash detection).
 const ACTIVE_STATUSES = [BookingStatus.PENDING, BookingStatus.APPROVED];
@@ -88,7 +108,7 @@ export class BookingsService {
     private readonly notifications: NotificationsService,
     private readonly push: PushService,
     private readonly mail: MailService,
-    private readonly sms: SmsService,
+    private readonly audit: AuditLogsService,
   ) {}
 
   // A booking request from the public website's booking form.
@@ -99,7 +119,12 @@ export class BookingsService {
     }
 
     const reference = dto.reference ?? bookingReference();
-    if (await this.bookingRepository.existsBy({ reference })) {
+    if (
+      await this.bookingRepository.exists({
+        where: { reference },
+        withDeleted: true,
+      })
+    ) {
       // The website retried a booking that already arrived: don't duplicate.
       throw new ConflictException(`Booking ${reference} already exists`);
     }
@@ -136,12 +161,65 @@ export class BookingsService {
     this.notifications.notifyNewBooking(saved).catch(() => undefined);
     // Web push to admins' phones/laptops, also without waiting on it.
     void this.push.notifyAdmins(saved);
+    this.audit.record({
+      action: 'booking.created',
+      entityType: 'booking',
+      entityId: saved.id,
+      entityLabel: saved.reference,
+      summary: `New booking ${saved.reference} from the website: ${saved.carLabel}, ${saved.startDate} (${saved.days} day${saved.days > 1 ? 's' : ''})`,
+      actor: { type: AuditActorType.WEBSITE, name: saved.customerName },
+    });
 
     return { id: saved.id, reference: saved.reference };
   }
 
-  findAll() {
-    return this.bookingRepository.find({ order: { createdAt: 'DESC' } });
+  // One page of the admin list, plus how many bookings each tab has.
+  async list(query: BookingsQueryDto) {
+    const { page, limit, skip } = pageOf(query);
+    const filter = query.filter ?? 'All';
+    const like = likePattern(query.q);
+    const search = (
+      qb: ReturnType<Repository<Booking>['createQueryBuilder']>,
+    ) =>
+      like
+        ? qb.andWhere(
+            '(b.reference ILIKE :like OR b.customerName ILIKE :like OR b.customerPhone ILIKE :like OR b.customerEmail ILIKE :like OR b.carLabel ILIKE :like)',
+            { like },
+          )
+        : qb;
+
+    const listQb = search(
+      this.bookingRepository
+        .createQueryBuilder('b')
+        .leftJoinAndSelect('b.vehicle', 'vehicle'),
+    )
+      .orderBy('b.createdAt', 'DESC')
+      .skip(skip)
+      .take(limit);
+    if (filter !== 'All') {
+      listQb.andWhere('b.status IN (:...statuses)', {
+        statuses: FILTER_STATUSES[filter],
+      });
+    }
+    const [[items, total], rows] = await Promise.all([
+      listQb.getManyAndCount(),
+      search(this.bookingRepository.createQueryBuilder('b'))
+        .select('b.status', 'status')
+        .addSelect('COUNT(*)::int', 'count')
+        .groupBy('b.status')
+        .getRawMany<{ status: BookingStatus; count: number }>(),
+    ]);
+    const byStatus = (statuses: BookingStatus[]) =>
+      rows
+        .filter((r) => statuses.includes(r.status))
+        .reduce((sum, r) => sum + Number(r.count), 0);
+    const counts = {
+      Pending: byStatus(FILTER_STATUSES.Pending),
+      Active: byStatus(FILTER_STATUSES.Active),
+      History: byStatus(FILTER_STATUSES.History),
+      All: rows.reduce((sum, r) => sum + Number(r.count), 0),
+    };
+    return { items, total, page, limit, counts };
   }
 
   // "Track my booking" on the website. The code alone isn't enough: the email
@@ -220,18 +298,25 @@ export class BookingsService {
       );
     }
 
+    const previous = booking.status;
     booking.status = dto.status;
     const saved = await this.bookingRepository.save(booking);
+    this.audit.record({
+      action: 'booking.status',
+      entityType: 'booking',
+      entityId: saved.id,
+      entityLabel: saved.reference,
+      summary: `Changed booking ${saved.reference} (${saved.customerName}) from ${previous} to ${saved.status}`,
+      details: { from: previous, to: saved.status },
+    });
 
     // Keep the assigned vehicle's availability in sync.
     const vehicleStatus = VEHICLE_STATUS_FOR_BOOKING[dto.status];
     if (vehicleStatus && booking.vehicleId) {
-      await this.vehiclesService.update(booking.vehicleId, {
-        status: vehicleStatus,
-      });
+      await this.vehiclesService.setStatus(booking.vehicleId, vehicleStatus);
     }
 
-    // Approving = confirming: tell the customer automatically, by email and text.
+    // Approving = confirming: email the customer automatically.
     // The approval stands even if a message can't be sent; the admin sees why.
     if (dto.status === BookingStatus.APPROVED) {
       return this.sendConfirmation(saved);
@@ -239,7 +324,7 @@ export class BookingsService {
     return saved;
   }
 
-  // Sends the "booking confirmed" email and text again for an approved booking.
+  // Sends the "booking confirmed" email again for an approved booking.
   async resendConfirmation(id: number) {
     const booking = await this.findOne(id);
     if (booking.status !== BookingStatus.APPROVED) {
@@ -247,32 +332,36 @@ export class BookingsService {
         'Only approved bookings get a confirmation message',
       );
     }
-    return this.sendConfirmation(booking);
+    const result = await this.sendConfirmation(booking);
+    this.audit.record({
+      action: 'booking.confirmation',
+      entityType: 'booking',
+      entityId: booking.id,
+      entityLabel: booking.reference,
+      summary: result.confirmationEmail.sent
+        ? `Resent the confirmation email for ${booking.reference} to ${result.confirmationEmail.to}`
+        : `Tried to resend the confirmation for ${booking.reference}: ${result.confirmationEmail.message}`,
+    });
+    return result;
   }
 
-  // Emails and texts the customer at the same time. Returns the booking plus
-  // what happened with each message.
+  // Emails the customer. Returns the booking plus what happened with the email.
   private async sendConfirmation(booking: Booking) {
-    // Reload so the messages have the assigned car's details.
+    // Reload so the email has the assigned car's details.
     const full = await this.findOne(booking.id);
-    const [confirmationEmail, confirmationSms] = await Promise.all([
-      this.mail.sendBookingConfirmed(full),
-      this.sms.sendBookingConfirmed(full),
-    ]);
-    const now = new Date();
-    if (confirmationEmail.sent) full.confirmationEmailSentAt = now;
-    if (confirmationSms.sent) full.confirmationSmsSentAt = now;
-    if (confirmationEmail.sent || confirmationSms.sent) {
+    const confirmationEmail = await this.mail.sendBookingConfirmed(full);
+    if (confirmationEmail.sent) {
+      full.confirmationEmailSentAt = new Date();
       await this.bookingRepository.update(full.id, {
         confirmationEmailSentAt: full.confirmationEmailSentAt,
-        confirmationSmsSentAt: full.confirmationSmsSentAt,
       });
     }
-    return { ...full, confirmationEmail, confirmationSms };
+    return { ...full, confirmationEmail };
   }
 
   async update(id: number, dto: UpdateBookingDto) {
     const booking = await this.findOne(id);
+    const before = { ...booking };
 
     const startDate = dto.startDate?.slice(0, 10) ?? booking.startDate;
     const days = dto.days ?? booking.days;
@@ -328,19 +417,142 @@ export class BookingsService {
     // Swapping the car on a confirmed booking moves the "Booked" flag with it.
     if (vehicleChanged && booking.status === BookingStatus.APPROVED) {
       if (previousVehicleId) {
-        await this.vehiclesService.update(previousVehicleId, {
-          status: VehicleStatus.AVAILABLE,
-        });
+        await this.vehiclesService.setStatus(
+          previousVehicleId,
+          VehicleStatus.AVAILABLE,
+        );
       }
       if (vehicleId) {
-        await this.vehiclesService.update(vehicleId, {
-          status: VehicleStatus.BOOKED,
-        });
+        await this.vehiclesService.setStatus(vehicleId, VehicleStatus.BOOKED);
       }
     }
 
     // Reload so the response carries the (new) vehicle relation.
-    return this.findOne(saved.id);
+    const updated = await this.findOne(saved.id);
+    this.logChanges(before, updated);
+    return updated;
+  }
+
+  // The approval email, ready to send, for when this server can't send it itself (the
+  // website sends it with its own Gmail, then calls confirmationSent).
+  async confirmationEmail(id: number) {
+    const booking = await this.findOne(id);
+    if (booking.status !== BookingStatus.APPROVED) {
+      throw new BadRequestException(
+        'Only approved bookings get a confirmation message',
+      );
+    }
+    const email = this.mail.composeBookingConfirmed(booking);
+    if (!email) {
+      throw new BadRequestException(
+        'The customer did not leave an email. Call or text them.',
+      );
+    }
+    return email;
+  }
+
+  // The website sent the approval email: record it like a sent email.
+  async confirmationSent(id: number, to: string) {
+    const booking = await this.findOne(id);
+    booking.confirmationEmailSentAt = new Date();
+    await this.bookingRepository.update(id, {
+      confirmationEmailSentAt: booking.confirmationEmailSentAt,
+    });
+    this.audit.record({
+      action: 'booking.confirmation',
+      entityType: 'booking',
+      entityId: id,
+      entityLabel: booking.reference,
+      summary: `Emailed the approval for ${booking.reference} to ${to}`,
+    });
+    return { ...booking, confirmationEmail: { sent: true as const, to } };
+  }
+
+  // Deleting hides the booking everywhere; it can be restored (Undo, or the
+  // activity log). A confirmed booking's car is freed meanwhile.
+  async remove(id: number) {
+    const booking = await this.findOne(id);
+    await this.bookingRepository.softDelete(id);
+    if (booking.status === BookingStatus.APPROVED && booking.vehicleId) {
+      await this.vehiclesService
+        .setStatus(booking.vehicleId, VehicleStatus.AVAILABLE)
+        .catch(() => undefined);
+    }
+    this.audit.record({
+      action: 'booking.deleted',
+      entityType: 'booking',
+      entityId: id,
+      entityLabel: booking.reference,
+      summary: `Deleted booking ${booking.reference} (${booking.customerName}, ${booking.status})`,
+    });
+    return { id, deleted: true };
+  }
+
+  async restore(id: number) {
+    const booking = await this.bookingRepository.findOne({
+      where: { id },
+      withDeleted: true,
+    });
+    if (!booking) throw new NotFoundException('Booking not found');
+    if (booking.deletedAt) {
+      await this.bookingRepository.restore(id);
+      // Back to confirmed: its car is in use again (if the car still exists).
+      if (booking.status === BookingStatus.APPROVED && booking.vehicleId) {
+        await this.vehiclesService
+          .setStatus(booking.vehicleId, VehicleStatus.BOOKED)
+          .catch(() => undefined);
+      }
+      this.audit.record({
+        action: 'booking.restored',
+        entityType: 'booking',
+        entityId: id,
+        entityLabel: booking.reference,
+        summary: `Restored booking ${booking.reference} (${booking.customerName})`,
+      });
+    }
+    return this.findOne(id);
+  }
+
+  // One activity-log entry listing what an edit changed (nothing if nothing did).
+  private logChanges(before: Booking, after: Booking) {
+    const car = (b: Booking) =>
+      b.vehicle
+        ? `${b.vehicle.brand} ${b.vehicle.model} (${b.vehicle.plateNumber})`
+        : 'none';
+    const fields: [string, (b: Booking) => string][] = [
+      ['assigned car', car],
+      ['pickup', (b) => `${b.startDate} ${b.pickupTime ?? ''}`.trim()],
+      ['days', (b) => String(b.days)],
+      ['service', (b) => b.driveType],
+      ['handover', (b) => b.handover],
+      ['location', (b) => b.location ?? ''],
+      ['price', (b) => peso(b.totalPrice)],
+      ['payment', (b) => b.paymentStatus],
+      ['payment method', (b) => b.paymentMethod ?? 'none'],
+      ['customer email', (b) => b.customerEmail ?? 'none'],
+    ];
+    const changes: Record<string, [string, string]> = {};
+    for (const [label, read] of fields) {
+      const [from, to] = [read(before), read(after)];
+      if (from !== to) changes[label] = [from, to];
+    }
+    const notesChanged = (before.notes ?? '') !== (after.notes ?? '');
+    if (!Object.keys(changes).length && !notesChanged) return;
+    const parts = Object.entries(changes).map(
+      ([label, [from, to]]) => `${label} ${from} → ${to}`,
+    );
+    if (notesChanged) parts.push('notes edited');
+    this.audit.record({
+      action: 'booking.updated',
+      entityType: 'booking',
+      entityId: after.id,
+      entityLabel: after.reference,
+      summary: `Updated booking ${after.reference}: ${parts.join('; ')}`,
+      details: {
+        changes,
+        ...(notesChanged && { notes: [before.notes, after.notes] }),
+      },
+    });
   }
 
   // Rejects assigning a vehicle that another active booking already holds on

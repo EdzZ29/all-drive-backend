@@ -4,6 +4,7 @@ import {
   Column,
   CreateDateColumn,
   UpdateDateColumn,
+  DeleteDateColumn,
 } from 'typeorm';
 
 export enum VehicleStatus {
@@ -67,4 +68,8 @@ export class Vehicle {
 
   @UpdateDateColumn()
   updatedAt!: Date;
+
+  // Set when deleted from the dashboard (hidden everywhere; can be restored).
+  @DeleteDateColumn()
+  deletedAt!: Date | null;
 }

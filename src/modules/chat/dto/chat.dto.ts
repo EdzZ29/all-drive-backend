@@ -15,6 +15,7 @@ import {
 
 import { ChatSender } from '../entities/chat-message.entity';
 import { ChatStatus } from '../entities/chat-conversation.entity';
+import { PageQueryDto } from '../../../common/pagination';
 
 export const MAX_CHAT_MESSAGE = 2000;
 
@@ -72,4 +73,14 @@ export class AdminReplyDto {
 export class UpdateChatDto {
   @IsEnum(ChatStatus)
   status!: ChatStatus;
+}
+
+// Tabs of the admin chat inbox.
+export const CHAT_FILTERS = ['Open', 'Closed', 'All'] as const;
+export type ChatFilter = (typeof CHAT_FILTERS)[number];
+
+export class ChatsQueryDto extends PageQueryDto {
+  @IsOptional()
+  @IsIn(CHAT_FILTERS)
+  filter?: ChatFilter;
 }

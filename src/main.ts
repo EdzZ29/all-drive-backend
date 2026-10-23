@@ -6,6 +6,7 @@ import cookieParser from 'cookie-parser';
 import { AppModule } from './app.module';
 import { upgradeLegacySchema } from './database/legacy-upgrade';
 import { shouldSynchronize } from './database/database.options';
+import { requestContextMiddleware } from './common/request-context';
 
 async function bootstrap() {
   // Before TypeORM synchronizes the schema (see the function for why).
@@ -14,6 +15,9 @@ async function bootstrap() {
   }
 
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
+
+  // First, so everything that runs for a request can find it (activity log).
+  app.use(requestContextMiddleware);
 
   // Serve uploaded images at /uploads/<filename> (bypasses the /api prefix).
   app.useStaticAssets(join(process.cwd(), 'uploads'), { prefix: '/uploads' });

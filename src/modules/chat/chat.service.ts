@@ -10,12 +10,16 @@ import {
 import { ChatMessage, ChatSender } from './entities/chat-message.entity';
 import {
   AddChatMessagesDto,
+  ChatsQueryDto,
   StartChatDto,
   WebsiteChatMessageDto,
 } from './dto/chat.dto';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PushService } from '../push/push.service';
 import { User } from '../users/entities/user.entity';
+import { AuditLogsService } from '../audit-logs/audit-logs.service';
+import { AuditActorType } from '../audit-logs/entities/audit-log.entity';
+import { likePattern, pageOf } from '../../common/pagination';
 
 // What the website visitor sees: no admin names, no internal ids beyond the message id.
 const forVisitor = (m: ChatMessage) => ({
@@ -39,6 +43,7 @@ export class ChatService {
     @InjectRepository(User)
     private readonly users: Repository<User>,
     private readonly push: PushService,
+    private readonly audit: AuditLogsService,
   ) {}
 
   // ---------- Website (visitor) side, called by the website's server ----------
@@ -60,6 +65,14 @@ export class ChatService {
       this.notifications
         .notifyNewChat(conversation, `${conversation.name}: ${first.body}`)
         .catch(() => undefined);
+      this.audit.record({
+        action: 'chat.started',
+        entityType: 'chat',
+        entityId: conversation.id,
+        entityLabel: conversation.name,
+        summary: `New chat from the website: "${preview(first.body)}"`,
+        actor: { type: AuditActorType.WEBSITE, name: conversation.name },
+      });
     }
     return { token, messages: saved.map(forVisitor) };
   }
@@ -87,11 +100,42 @@ export class ChatService {
 
   // ---------- Admin side ----------
 
-  findAll() {
-    return this.conversations.find({
-      order: { lastMessageAt: 'DESC' },
-      take: 200,
-    });
+  // One page of the inbox, plus how many chats each tab has.
+  async list(query: ChatsQueryDto) {
+    const { page, limit, skip } = pageOf(query);
+    const filter = query.filter ?? 'All';
+    const like = likePattern(query.q);
+    const search = (
+      qb: ReturnType<Repository<ChatConversation>['createQueryBuilder']>,
+    ) =>
+      like
+        ? qb.andWhere(
+            '(c.name ILIKE :like OR c.contact ILIKE :like OR c.lastMessagePreview ILIKE :like)',
+            { like },
+          )
+        : qb;
+    const listQb = search(this.conversations.createQueryBuilder('c'))
+      .orderBy('c.lastMessageAt', 'DESC')
+      .skip(skip)
+      .take(limit);
+    if (filter !== 'All')
+      listQb.andWhere('c.status = :status', { status: filter });
+    const [[items, total], rows] = await Promise.all([
+      listQb.getManyAndCount(),
+      search(this.conversations.createQueryBuilder('c'))
+        .select('c.status', 'status')
+        .addSelect('COUNT(*)::int', 'count')
+        .groupBy('c.status')
+        .getRawMany<{ status: ChatStatus; count: number }>(),
+    ]);
+    const of = (s: ChatStatus) =>
+      Number(rows.find((row) => row.status === s)?.count ?? 0);
+    const counts = {
+      Open: of(ChatStatus.OPEN),
+      Closed: of(ChatStatus.CLOSED),
+      All: of(ChatStatus.OPEN) + of(ChatStatus.CLOSED),
+    };
+    return { items, total, page, limit, counts };
   }
 
   // Opening a chat marks it read.
@@ -127,6 +171,13 @@ export class ChatService {
     });
     await this.conversations.save(conversation);
     this.notifications.emitChat({ conversation, messages: [message] });
+    this.audit.record({
+      action: 'chat.replied',
+      entityType: 'chat',
+      entityId: id,
+      entityLabel: conversation.name,
+      summary: `Replied to ${conversation.name} in chat: "${preview(message.body)}"`,
+    });
     return message;
   }
 
@@ -134,16 +185,53 @@ export class ChatService {
     const conversation = await this.byId(id);
     conversation.status = status;
     if (status === ChatStatus.CLOSED) conversation.adminUnread = 0;
+    const previous = conversation.status;
     const saved = await this.conversations.save(conversation);
     this.notifications.emitChat({ conversation: saved, messages: [] });
+    if (previous !== status) {
+      this.audit.record({
+        action: 'chat.status',
+        entityType: 'chat',
+        entityId: id,
+        entityLabel: saved.name,
+        summary: `${status === ChatStatus.CLOSED ? 'Closed' : 'Reopened'} the chat with ${saved.name}`,
+      });
+    }
     return saved;
   }
 
-  // For spam.
+  // Hidden everywhere, but kept so it can be restored. The visitor's chat
+  // window starts over while it's deleted.
   async remove(id: number) {
     const conversation = await this.byId(id);
-    await this.conversations.remove(conversation);
-    return { message: 'Chat deleted' };
+    await this.conversations.softDelete(id);
+    this.audit.record({
+      action: 'chat.deleted',
+      entityType: 'chat',
+      entityId: id,
+      entityLabel: conversation.name,
+      summary: `Deleted the chat with ${conversation.name}`,
+    });
+    return { id, deleted: true };
+  }
+
+  async restore(id: number) {
+    const conversation = await this.conversations.findOne({
+      where: { id },
+      withDeleted: true,
+    });
+    if (!conversation) throw new NotFoundException('Chat not found');
+    if (conversation.deletedAt) {
+      await this.conversations.restore(id);
+      this.audit.record({
+        action: 'chat.restored',
+        entityType: 'chat',
+        entityId: id,
+        entityLabel: conversation.name,
+        summary: `Restored the chat with ${conversation.name}`,
+      });
+    }
+    return this.byId(id);
   }
 
   // ---------- Helpers ----------

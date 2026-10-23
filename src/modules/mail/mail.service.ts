@@ -17,6 +17,14 @@ export type EmailResult =
       message: string;
     };
 
+// Give up quickly when the mail server can't be reached (some hosts block email ports), so
+// approving a booking never hangs. The website then sends the email instead.
+const TIMEOUTS = {
+  connectionTimeout: 8_000,
+  greetingTimeout: 8_000,
+  socketTimeout: 15_000,
+};
+
 // Sends emails to customers from the AllDrive Gmail account. Needs GMAIL_USER and
 // GMAIL_APP_PASSWORD (a Google "App password"); without them nothing is sent.
 // Another email provider can be used instead with SMTP_HOST (+ SMTP_PORT, SMTP_SECURE).
@@ -37,6 +45,7 @@ export class MailService {
         host: smtpHost,
         port: Number(config.get<string>('SMTP_PORT') ?? 587),
         secure: config.get<string>('SMTP_SECURE') === 'true',
+        ...TIMEOUTS,
         ...(user && pass ? { auth: { user, pass } } : {}),
       });
       this.from = `"${business.name}" <${user || business.email}>`;
@@ -44,6 +53,7 @@ export class MailService {
       this.transporter = nodemailer.createTransport({
         service: 'gmail',
         auth: { user, pass },
+        ...TIMEOUTS,
       });
       this.from = `"${business.name}" <${user}>`;
     } else {
@@ -55,7 +65,21 @@ export class MailService {
     }
   }
 
-  // "Your booking is confirmed", to the customer's email (if they gave one).
+  // The finished confirmation email (recipient, subject, body), so the website can send it
+  // with its own Gmail when this server can't. null when the customer left no email.
+  composeBookingConfirmed(
+    booking: ConfirmedBooking & { customerEmail: string | null },
+  ) {
+    const to = booking.customerEmail?.trim();
+    if (!to) return null;
+    return {
+      to,
+      replyTo: this.replyTo,
+      ...buildBookingConfirmedEmail(booking),
+    };
+  }
+
+  // "Your booking is approved", to the customer's email (if they gave one).
   async sendBookingConfirmed(
     booking: ConfirmedBooking & { customerEmail: string | null },
   ): Promise<EmailResult> {

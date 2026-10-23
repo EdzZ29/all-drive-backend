@@ -98,12 +98,12 @@ export function buildBookingConfirmedEmail(b: ConfirmedBooking) {
   ];
 
   const duration = `${b.days} day${b.days > 1 ? 's' : ''}`;
-  const subject = `Booking Confirmed (${b.reference}): your car is available on ${pickup}`;
+  const subject = `Your booking is approved (${b.reference}): ${car} on ${pickup}`;
 
   const text = [
     `Hi ${firstName},`,
     '',
-    'BOOKING CONFIRMED: your car is available.',
+    'YOUR BOOKING IS APPROVED. Your car is confirmed and reserved for you.',
     '',
     `Car: ${car}`,
     `Pickup: ${pickup}`,
@@ -126,20 +126,20 @@ export function buildBookingConfirmedEmail(b: ConfirmedBooking) {
   const html = `<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"></head>
 <body style="margin:0;padding:0;background:${C.bg};font-family:Arial,Helvetica,sans-serif;color:${C.ink}">
-  <div style="display:none;max-height:0;overflow:hidden;opacity:0">Booking confirmed: your car is available on ${escapeHtml(pickup)}.</div>
+  <div style="display:none;max-height:0;overflow:hidden;opacity:0">Your booking is approved: ${escapeHtml(car)} on ${escapeHtml(pickup)}.</div>
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${C.bg};padding:24px 12px">
     <tr><td align="center">
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;background:#ffffff;border-radius:16px;overflow:hidden">
         <tr><td style="background:${C.ink};padding:24px">
           <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
-            <td style="color:${C.brand};font-size:12px;font-weight:bold;letter-spacing:2px;text-transform:uppercase">Booking confirmed</td>
+            <td style="color:${C.brand};font-size:12px;font-weight:bold;letter-spacing:2px;text-transform:uppercase">Booking approved</td>
             <td align="right" style="color:${C.soft};font-size:12px;white-space:nowrap">Ref <b style="color:#ffffff">${escapeHtml(b.reference)}</b></td>
           </tr></table>
-          <p style="margin:8px 0 0;color:#ffffff;font-size:26px;line-height:1.2;font-weight:bold">Booking Confirmed</p>
-          <p style="margin:6px 0 0;color:#ffffff;font-size:16px;line-height:1.5">&#10003; Your car is available: <b>${escapeHtml(car)}</b></p>
+          <p style="margin:8px 0 0;color:#ffffff;font-size:26px;line-height:1.2;font-weight:bold">Your booking is approved</p>
+          <p style="margin:6px 0 0;color:#ffffff;font-size:16px;line-height:1.5">&#10003; Confirmed and reserved: <b>${escapeHtml(car)}</b></p>
         </td></tr>
         <tr><td style="padding:20px 24px 0;font-size:15px;line-height:1.6">
-          Hi ${escapeHtml(firstName)},<br>Your booking with ${escapeHtml(business.name)} is <b style="color:${C.green}">confirmed</b> and your car is ready for you.
+          Hi ${escapeHtml(firstName)},<br>Your booking with ${escapeHtml(business.name)} has been <b style="color:${C.green}">approved</b>. Your car is confirmed and reserved for you. Here are your booking details:
         </td></tr>
         <tr><td style="padding:16px 24px 0">
           <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#ecfdf3;border:1px solid #bbf7d0;border-radius:12px">

@@ -4,6 +4,7 @@ import {
   Column,
   CreateDateColumn,
   UpdateDateColumn,
+  DeleteDateColumn,
 } from 'typeorm';
 
 // Where the admin is with an inquiry.
@@ -48,6 +49,10 @@ export class Inquiry {
 
   @CreateDateColumn()
   createdAt!: Date;
+
+  // Set when deleted from the dashboard (hidden everywhere; can be restored).
+  @DeleteDateColumn()
+  deletedAt!: Date | null;
 
   @UpdateDateColumn()
   updatedAt!: Date;

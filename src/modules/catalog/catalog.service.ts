@@ -12,8 +12,16 @@ import {
   type Rates,
 } from './catalog.constants';
 import { RatesDto, UpdateModelDto, UpdateSettingsDto } from './dto/catalog.dto';
+import { AuditLogsService } from '../audit-logs/audit-logs.service';
 
 const SETTINGS_ID = 1;
+
+const money = (v: number | null | undefined) =>
+  v == null ? 'on request' : `₱${v.toLocaleString('en-PH')}`;
+const ratesText = (rates: Rates) =>
+  Object.entries(rates)
+    .map(([zone, v]) => `${zone} ${money(v)}`)
+    .join(', ');
 
 // Keeps only the four zone keys, in a fixed order.
 const toRates = (dto: RatesDto): Rates =>
@@ -29,7 +37,17 @@ export class CatalogService {
     @InjectRepository(CarModel) private readonly models: Repository<CarModel>,
     @InjectRepository(CatalogSettings)
     private readonly settings: Repository<CatalogSettings>,
+    private readonly audit: AuditLogsService,
   ) {}
+
+  private log(action: string, label: string, summary: string) {
+    this.audit.record({
+      action,
+      entityType: 'catalog',
+      entityLabel: label,
+      summary,
+    });
+  }
 
   async get() {
     const [classes, models, settings] = await Promise.all([
@@ -54,12 +72,22 @@ export class CatalogService {
   async setClassRates(id: string, rates: RatesDto) {
     this.assertClassId(id);
     await this.classes.save({ id, rates: toRates(rates) });
+    this.log(
+      'catalog.class',
+      id,
+      `Changed the ${id} prices: ${ratesText(toRates(rates))}`,
+    );
     return this.get();
   }
 
   async resetClass(id: string) {
     this.assertClassId(id);
     await this.classes.delete({ id });
+    this.log(
+      'catalog.class_reset',
+      id,
+      `Reset the ${id} prices to the website defaults`,
+    );
     return this.get();
   }
 
@@ -80,17 +108,41 @@ export class CatalogService {
       }));
     }
     await this.models.save(model);
+    const parts = [
+      dto.availability !== undefined && `availability ${dto.availability}`,
+      dto.rates !== undefined &&
+        (dto.rates === null
+          ? 'prices back to the class prices'
+          : `prices ${ratesText(toRates(dto.rates))}`),
+      dto.photos !== undefined &&
+        `${dto.photos.length} photo${dto.photos.length === 1 ? '' : 's'}`,
+    ].filter(Boolean);
+    this.log(
+      'catalog.model',
+      id,
+      `Updated the website car ${id}${parts.length ? `: ${parts.join('; ')}` : ''}`,
+    );
     return this.get();
   }
 
   async resetModel(id: string) {
     this.assertModelId(id);
     await this.models.delete({ id });
+    this.log(
+      'catalog.model_reset',
+      id,
+      `Reset the website car ${id} to its defaults`,
+    );
     return this.get();
   }
 
   async updateSettings(dto: UpdateSettingsDto) {
     await this.settings.save({ id: SETTINGS_ID, driverRate: dto.driverRate });
+    this.log(
+      'catalog.settings',
+      'driver rate',
+      `Changed the driver rate to ${money(dto.driverRate)} a day`,
+    );
     return this.get();
   }
 

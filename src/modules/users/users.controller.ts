@@ -1,4 +1,14 @@
-import { Body, Controller, Get, Param, Patch } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  Patch,
+  Post,
+} from '@nestjs/common';
 import { IsBoolean } from 'class-validator';
 
 import { UsersService } from './users.service';
@@ -7,7 +17,6 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { UserRole } from './entities/user.entity';
 
 class SetActiveDto {
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-call
   @IsBoolean()
   isActive!: boolean;
 }
@@ -36,5 +45,17 @@ export class UsersController {
     @CurrentUser('id') actingUserId: number,
   ) {
     return this.usersService.setActive(+id, dto.isActive, actingUserId);
+  }
+
+  // Hidden and signed out, but kept: POST :id/restore brings it back.
+  @Delete(':id')
+  remove(@Param('id') id: number, @CurrentUser('id') actingUserId: number) {
+    return this.usersService.remove(+id, actingUserId);
+  }
+
+  @HttpCode(HttpStatus.OK)
+  @Post(':id/restore')
+  restore(@Param('id') id: number) {
+    return this.usersService.restore(+id);
   }
 }

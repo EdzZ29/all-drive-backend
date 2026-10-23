@@ -4,6 +4,7 @@ import {
   Column,
   CreateDateColumn,
   UpdateDateColumn,
+  DeleteDateColumn,
 } from 'typeorm';
 
 // Only staff have accounts. Customers book and send inquiries through the
@@ -49,4 +50,8 @@ export class User {
 
   @UpdateDateColumn()
   updatedAt!: Date;
+
+  // Set when an admin account is deleted (can be restored). Deleted admins cannot sign in.
+  @DeleteDateColumn()
+  deletedAt!: Date | null;
 }

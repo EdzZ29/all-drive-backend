@@ -6,6 +6,8 @@ import {
   Delete,
   Body,
   Param,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
 
 import { VehiclesService } from './vehicles.service';
@@ -46,9 +48,17 @@ export class VehiclesController {
     return this.vehiclesService.update(+id, dto);
   }
 
+  // Hidden everywhere, but kept: POST :id/restore brings it back.
   @Roles(UserRole.ADMIN)
   @Delete(':id')
   remove(@Param('id') id: number) {
     return this.vehiclesService.remove(+id);
+  }
+
+  @Roles(UserRole.ADMIN)
+  @HttpCode(HttpStatus.OK)
+  @Post(':id/restore')
+  restore(@Param('id') id: number) {
+    return this.vehiclesService.restore(+id);
   }
 }

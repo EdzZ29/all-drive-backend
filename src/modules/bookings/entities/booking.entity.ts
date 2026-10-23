@@ -6,6 +6,7 @@ import {
   JoinColumn,
   CreateDateColumn,
   UpdateDateColumn,
+  DeleteDateColumn,
 } from 'typeorm';
 
 import { Vehicle } from '../../vehicles/entities/vehicles.entity';
@@ -192,8 +193,10 @@ export class Booking {
   @Column({ type: 'timestamp', nullable: true })
   confirmationEmailSentAt!: Date | null;
 
-  // When the "booking confirmed" text (SMS) last reached the customer.
-  @Column({ type: 'timestamp', nullable: true })
+  // No longer used (confirmation texts were removed). Kept: dropping it in the same update
+  // that adds deletedAt makes TypeORM rename it to deletedAt, which would mark every booking
+  // that was ever texted as deleted. Drop it in a later, separate update.
+  @Column({ type: 'timestamp', nullable: true, select: false })
   confirmationSmsSentAt!: Date | null;
 
   @CreateDateColumn()
@@ -201,4 +204,8 @@ export class Booking {
 
   @UpdateDateColumn()
   updatedAt!: Date;
+
+  // Set when deleted from the dashboard (hidden everywhere; can be restored).
+  @DeleteDateColumn()
+  deletedAt!: Date | null;
 }
