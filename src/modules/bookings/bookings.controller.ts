@@ -19,6 +19,7 @@ import {
   UpdateBookingStatusDto,
 } from './dto/update-booking.dto';
 import { BookingsQueryDto } from './dto/bookings-query.dto';
+import { CalendarQueryDto } from './dto/calendar-query.dto';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '../users/entities/user.entity';
 
@@ -38,6 +39,18 @@ export class BookingsController {
   @Get()
   list(@Query() query: BookingsQueryDto) {
     return this.bookingsService.list(query);
+  }
+
+  // ?from=YYYY-MM-DD&to=YYYY-MM-DD: confirmed bookings on those days.
+  @Get('calendar')
+  calendar(@Query() query: CalendarQueryDto) {
+    return this.bookingsService.calendar(query);
+  }
+
+  // Approved bookings with an assigned unit (which cars are reserved, out or due back).
+  @Get('rentals')
+  rentals() {
+    return this.bookingsService.rentals();
   }
 
   @Get(':id')

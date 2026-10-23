@@ -5,7 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Not, Repository } from 'typeorm';
+import { In, IsNull, Not, Repository } from 'typeorm';
 import { randomInt } from 'crypto';
 
 import { Booking, BookingStatus } from './entities/booking.entity';
@@ -23,6 +23,7 @@ import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { AuditActorType } from '../audit-logs/entities/audit-log.entity';
 import { likePattern, pageOf } from '../../common/pagination';
 import { BookingFilter, BookingsQueryDto } from './dto/bookings-query.dto';
+import { CalendarQueryDto } from './dto/calendar-query.dto';
 
 // When a booking becomes Approved its assigned vehicle is in use, so it's
 // marked Booked. Returning/completing/declining/cancelling frees it again.
@@ -55,6 +56,13 @@ const peso = (v: number | string | null) =>
 
 // Statuses that still hold the assigned vehicle (used for clash detection).
 const ACTIVE_STATUSES = [BookingStatus.PENDING, BookingStatus.APPROVED];
+
+// Bookings that were confirmed (shown on the calendar).
+const CONFIRMED_STATUSES = [
+  BookingStatus.APPROVED,
+  BookingStatus.RETURNED,
+  BookingStatus.COMPLETED,
+];
 
 // "2026-10-21" + 3 days -> "2026-10-24", on plain calendar dates.
 function addDays(date: string, days: number) {
@@ -259,6 +267,31 @@ export class BookingsService {
       paymentStatus: booking.paymentStatus,
       createdAt: booking.createdAt,
     };
+  }
+
+  // Confirmed bookings (approved, and the ones that went ahead) with any day from pickup to
+  // return inside the range, for the admin calendar.
+  async calendar({ from, to }: CalendarQueryDto) {
+    if (to < from) throw new BadRequestException('to must not be before from');
+    if (addDays(from, 100) < to) {
+      throw new BadRequestException('Ask for 100 days or fewer at a time');
+    }
+    return this.bookingRepository
+      .createQueryBuilder('b')
+      .leftJoinAndSelect('b.vehicle', 'vehicle')
+      .where('b.status IN (:...statuses)', { statuses: CONFIRMED_STATUSES })
+      .andWhere('b.startDate <= :to AND b.endDate >= :from', { from, to })
+      .orderBy('b.startDate', 'ASC')
+      .addOrderBy('b.pickupTime', 'ASC')
+      .getMany();
+  }
+
+  // Approved bookings with a unit assigned: the cars that are reserved, out or due back.
+  rentals() {
+    return this.bookingRepository.find({
+      where: { status: BookingStatus.APPROVED, vehicleId: Not(IsNull()) },
+      order: { startDate: 'ASC' },
+    });
   }
 
   async findOne(id: number) {
